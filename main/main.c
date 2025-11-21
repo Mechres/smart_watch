@@ -22,6 +22,9 @@
 #include "esp_sntp.h"
 #include "driver/gpio.h"
 
+#include "display.h"
+#include "watchfaces.h"
+
 /* WiFi credentials - configure these for your network */
 #define WIFI_SSID      "SUPERONLINE_WiFi_C8AF"
 #define WIFI_PASS      "4UFRYY9EAXMN"
@@ -63,8 +66,17 @@ typedef enum {
     MENU_ROOT,            // Top-level category menu
     MENU_SETTINGS,        // Settings menu
     MENU_SENSOR_DATA,     // Detailed sensor readings
+    MENU_WATCHFACE,       // Watchface selection
     MENU_COUNT
 } menu_mode_t;
+
+typedef enum {
+    WATCHFACE_DIGITAL = 0,    // HH:MM big display
+    WATCHFACE_ANALOG_STYLE,   // Analog-inspired text
+    WATCHFACE_MINIMAL,        // Minimal with date only
+    WATCHFACE_COMPACT,        // Compact with all info
+    WATCHFACE_COUNT
+} watchface_t;
 
 typedef enum {
     SETTINGS_MOTION_THRESHOLD = 0,
@@ -85,19 +97,14 @@ static menu_mode_t current_menu = MENU_WATCH;
 static int32_t menu_last_activity_s = 0;  // Track menu activity for auto-exit
 static settings_item_t current_setting = SETTINGS_MOTION_THRESHOLD;  // Currently selected setting
 static sensor_item_t current_sensor = SENSOR_TEMP;  // Currently selected sensor
-static int root_selection = 0; // 0 = Sensors, 1 = Settings
+static int root_selection = 0; // 0 = Sensors, 1 = Settings, 2 = Watchface
+static watchface_t current_watchface = WATCHFACE_DIGITAL;  // Currently selected watchface
+static int watchface_selection = 0;  // For menu navigation
 static bool editing_mode = false;  // Are we editing a setting value?
 
 /* Editable settings */
 static int16_t motion_threshold_editable = 100;
 static int16_t screen_timeout_editable = 5;
-
-/* Display */
-/* SH1106 framebuffer */
-#define DISP_WIDTH 128
-#define DISP_HEIGHT 64
-#define PAGE_COUNT (DISP_HEIGHT / 8)
-static uint8_t fb[DISP_WIDTH * PAGE_COUNT]; // 1024 bytes
 
 /* Motion-based screen control */
 #define MOTION_THRESHOLD        100    // threshold for motion detection (mg units, ~256 = 1g)
@@ -107,8 +114,8 @@ static int32_t last_motion_time_s = 0;
 static int16_t last_ax = 0, last_ay = 0, last_az = 0;  // for delta calculation
 
 /* small 5x7 font (only ASCII 32..127). We'll include a minimal subset for digits, letters, punctuation.
-   For brevity we include charset for 32..127. This is a standard 5x7 font array (each char 5 bytes). */
-static const uint8_t font5x7[][5] = {
+    For brevity we include charset for 32..127. This is a standard 5x7 font array (each char 5 bytes). */
+const uint8_t font5x7[][5] = {
     /* space (32) */ {0x00,0x00,0x00,0x00,0x00},
     /* ! (33) */     {0x00,0x00,0x5F,0x00,0x00},
     /* " (34) */     {0x00,0x07,0x00,0x07,0x00},
@@ -333,65 +340,7 @@ static esp_err_t aht_read(float *temperature, float *humidity) {
     return ESP_OK;
 }
 
-/* ---------- SH1106 basic comms ---------- */
-static esp_err_t sh1106_write_cmd(const uint8_t *cmds, size_t len) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (!cmd) return ESP_ERR_NO_MEM;
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (SH1106_ADDR<<1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
-    uint8_t control = 0x00;
-    i2c_master_write(cmd, &control, 1, ACK_CHECK_EN);
-    i2c_master_write(cmd, (uint8_t*)cmds, len, ACK_CHECK_EN);
-    i2c_master_stop(cmd);
-    esp_err_t err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-    return err;
-}
-
-/* send one page (128 bytes) to SH1106. We send a 129-byte buffer: [0x40, data... ] */
-static esp_err_t sh1106_write_page(uint8_t page, const uint8_t *data128) {
-    // set page and column
-    uint8_t page_cmds[] = { (uint8_t)(0xB0 + page), 0x02, 0x10 };
-    if (sh1106_write_cmd(page_cmds, sizeof(page_cmds)) != ESP_OK) return ESP_FAIL;
-
-    uint8_t buf[129];
-    buf[0] = 0x40; // data control byte
-    memcpy(&buf[1], data128, 128);
-    esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, SH1106_ADDR, buf, sizeof(buf), pdMS_TO_TICKS(I2C_TIMEOUT_MS));
-    return err;
-}
-
-static esp_err_t sh1106_init(void) {
-    const uint8_t init_seq[] = {
-        0xAE, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0xA1, 0xC8,
-        0xDA, 0x12, 0x81, 0x7F, 0xA4, 0xA6, 0xD5, 0x80,
-        0x8D, 0x14, 0xAF
-    };
-    esp_err_t err = sh1106_write_cmd(init_seq, sizeof(init_seq));
-    if (err != ESP_OK) return err;
-    // clear fb and send zeros
-    memset(fb, 0x00, sizeof(fb));
-    for (int p = 0; p < PAGE_COUNT; ++p) {
-        if (sh1106_write_page(p, &fb[p*DISP_WIDTH]) != ESP_OK) {
-            // allow some retry
-            vTaskDelay(pdMS_TO_TICKS(50));
-            if (sh1106_write_page(p, &fb[p*DISP_WIDTH]) != ESP_OK) return ESP_FAIL;
-        }
-    }
-    return ESP_OK;
-}
-
-/* Turn display on */
-static esp_err_t sh1106_display_on(void) {
-    const uint8_t cmd[] = {0xAF};
-    return sh1106_write_cmd(cmd, sizeof(cmd));
-}
-
-/* Turn display off */
-static esp_err_t sh1106_display_off(void) {
-    const uint8_t cmd[] = {0xAE};
-    return sh1106_write_cmd(cmd, sizeof(cmd));
-}
+/* SH1106 functions moved to display.c (use display.h prototypes) */
 
 /* Detect motion from accelerometer readings */
 static bool detect_motion(int16_t ax, int16_t ay, int16_t az) {
@@ -439,84 +388,34 @@ static void update_screen_state(bool motion_detected, int32_t current_time_s) {
     }
 }
 
-/* ---------- framebuffer helpers ---------- */
-static void fb_clear(void) { memset(fb, 0x00, sizeof(fb)); }
-
-/* set a pixel (x:0..127, y:0..63) */
-static void fb_set_pixel(int x, int y, int color) {
-    if (x < 0 || x >= DISP_WIDTH || y < 0 || y >= DISP_HEIGHT) return;
-    int page = y >> 3;
-    int idx = page * DISP_WIDTH + x;
-    uint8_t bit = 1 << (y & 0x7);
-    if (color) fb[idx] |= bit;
-    else fb[idx] &= ~bit;
-}
-
-/* draw a character using 5x7 font at (x,y) top-left */
-static void fb_draw_char(int x, int y, char c) {
-    if (c < 32 || c > 127) c = '?';
-    const uint8_t *glyph = font5x7[c - 32];
-    for (int col = 0; col < 5; ++col) {
-        uint8_t colbits = glyph[col];
-        for (int row = 0; row < 7; ++row) {
-            int px = x + col;
-            int py = y + row;
-            fb_set_pixel(px, py, (colbits >> row) & 0x01);
-        }
-    }
-}
-
-/* draw string (monospaced, 1px spacing) */
-static void fb_draw_text(int x, int y, const char *s) {
-    while (*s) {
-        fb_draw_char(x, y, *s++);
-        x += 6; // 5 px + 1 px gap
-    }
-}
-
-/* render framebuffer to display */
-static esp_err_t sh1106_render(void) {
-    for (int p = 0; p < PAGE_COUNT; ++p) {
-        // each page is 128 bytes starting at fb[p*128]
-        esp_err_t r = sh1106_write_page(p, &fb[p*DISP_WIDTH]);
-        if (r != ESP_OK) return r;
-    }
-    return ESP_OK;
-}
+/* framebuffer helpers are provided by display.c (include display.h at top) */
 
 /* ---------- Menu rendering ---------- */
 /* Forward declarations */
 static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t ay, int16_t az);
 
 static void render_watch_display(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo) {
-    fb_clear();
-    char buf[64];
-
-    // Time: HH:MM big by printing twice vertically
-    snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min);
-    int len = strlen(buf);
-    int x = (DISP_WIDTH - (len*6)) / 2;
-    fb_draw_text(x, 0, buf);
-    fb_draw_text(x, 8, buf);
-
-    // Date: Day Mon Year in Turkish
-    const char *months_tr[12] = {"Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"};
-    snprintf(buf, sizeof(buf), "%02d %s %04d", timeinfo->tm_mday, months_tr[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
-    len = strlen(buf);
-    x = (DISP_WIDTH - (len*6)) / 2;
-    fb_draw_text(x, 20, buf);
-
-    // Sensors lower area
-    snprintf(buf, sizeof(buf), "T:%.1fC H:%.0f%%", temp, hum);
-    fb_draw_text(0, 34, buf);
-    snprintf(buf, sizeof(buf), "X:%d Y:%d", ax, ay);
-    fb_draw_text(0, 44, buf);
-    snprintf(buf, sizeof(buf), "Z:%d", az);
-    fb_draw_text(80, 44, buf);
+    // Delegate to appropriate watchface renderer
+    switch (current_watchface) {
+        case WATCHFACE_DIGITAL:
+            render_watchface_digital(temp, hum, ax, ay, az, timeinfo);
+            break;
+        case WATCHFACE_ANALOG_STYLE:
+            render_watchface_analog(temp, hum, ax, ay, az, timeinfo);
+            break;
+        case WATCHFACE_MINIMAL:
+            render_watchface_minimal(temp, hum, ax, ay, az, timeinfo);
+            break;
+        case WATCHFACE_COMPACT:
+            render_watchface_compact(temp, hum, ax, ay, az, timeinfo);
+            break;
+        default:
+            render_watchface_digital(temp, hum, ax, ay, az, timeinfo);
+            break;
+    }
 }
 
-/* forward declaration (defined below) */
-static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t ay, int16_t az);
+/* watchface implementations live in watchfaces.c; prototypes are in watchfaces.h (included at top) */
 
 static void render_sensor_menu(float temp, float hum, int16_t ax, int16_t ay, int16_t az) {
     render_sensor_menu_list(temp, hum, ax, ay, az);
@@ -611,8 +510,45 @@ static void render_root_menu(void) {
     fb_draw_text(0, 0, "===MENU===");
     if (root_selection == 0) fb_draw_text(0, 12, "> Sensors"); else fb_draw_text(0, 12, "  Sensors");
     if (root_selection == 1) fb_draw_text(0, 24, "> Settings"); else fb_draw_text(0, 24, "  Settings");
+    if (root_selection == 2) fb_draw_text(0, 36, "> Watchface"); else fb_draw_text(0, 36, "  Watchface");
 }
 
+/* Watchface selection menu */
+static void render_watchface_menu(void) {
+    fb_clear();
+    char buf[64];
+    
+    fb_draw_text(0, 0, "===WATCHFACE===");
+    
+    const char *names[WATCHFACE_COUNT] = {
+        "Digital",
+        "Analog Style",
+        "Minimal",
+        "Compact"
+    };
+    
+    // Show 3 watchfaces at a time
+    int start_idx = watchface_selection - 1;
+    if (start_idx < 0) start_idx = 0;
+    if (start_idx > WATCHFACE_COUNT - 3) start_idx = WATCHFACE_COUNT - 3;
+    
+    int y_pos = 12;
+    for (int i = start_idx; i < start_idx + 3 && i < WATCHFACE_COUNT; i++) {
+        bool is_selected = (i == watchface_selection);
+        char prefix = is_selected ? '>' : ' ';
+        snprintf(buf, sizeof(buf), "%c %s", prefix, names[i]);
+        fb_draw_text(0, y_pos, buf);
+        y_pos += 10;
+    }
+    
+    // Show scroll indicator
+    if (start_idx > 0) {
+        fb_draw_text(0, 52, "  [up]");
+    }
+    if (start_idx + 3 < WATCHFACE_COUNT) {
+        fb_draw_text(70, 52, "[dn]");
+    }
+}
 
 static void sntp_initialize(void)
 {
@@ -784,6 +720,12 @@ static void main_task(void *arg) {
                     root_selection--;
                     ESP_LOGI(TAG, "Root selection: %d", root_selection);
                 }
+            } else if (current_menu == MENU_WATCHFACE) {
+                // Navigate watchface menu up
+                if (watchface_selection > 0) {
+                    watchface_selection--;
+                    ESP_LOGI(TAG, "Watchface: moved up to %d", watchface_selection);
+                }
             } else if (current_menu == MENU_SETTINGS && editing_mode) {
                 // In edit mode: increase value
                 if (current_setting == SETTINGS_MOTION_THRESHOLD) {
@@ -815,9 +757,15 @@ static void main_task(void *arg) {
             
             if (current_menu == MENU_ROOT) {
                 // navigate root categories
-                if (root_selection < 1) {
+                if (root_selection < 2) {
                     root_selection++;
                     ESP_LOGI(TAG, "Root selection: %d", root_selection);
+                }
+            } else if (current_menu == MENU_WATCHFACE) {
+                // Navigate watchface menu down
+                if (watchface_selection < WATCHFACE_COUNT - 1) {
+                    watchface_selection++;
+                    ESP_LOGI(TAG, "Watchface: moved down to %d", watchface_selection);
                 }
             } else if (current_menu == MENU_SETTINGS && editing_mode) {
                 // In edit mode: decrease value
@@ -858,10 +806,20 @@ static void main_task(void *arg) {
                 if (root_selection == 0) {
                     current_menu = MENU_SENSOR_DATA;
                     ESP_LOGI(TAG, "Entered Sensors submenu");
-                } else {
+                } else if (root_selection == 1) {
                     current_menu = MENU_SETTINGS;
                     ESP_LOGI(TAG, "Entered Settings submenu");
+                } else if (root_selection == 2) {
+                    current_menu = MENU_WATCHFACE;
+                    watchface_selection = current_watchface;
+                    ESP_LOGI(TAG, "Entered Watchface menu");
                 }
+            } else if (current_menu == MENU_WATCHFACE) {
+                // OK selects watchface
+                current_watchface = watchface_selection;
+                ESP_LOGI(TAG, "Selected watchface: %d", watchface_selection);
+                current_menu = MENU_WATCH;
+                editing_mode = false;
             } else if (current_menu == MENU_SETTINGS && !editing_mode) {
                 // Enter edit mode for selected setting
                 editing_mode = true;
@@ -906,6 +864,9 @@ static void main_task(void *arg) {
                     break;
                 case MENU_SETTINGS:
                     render_settings_menu();
+                    break;
+                case MENU_WATCHFACE:
+                    render_watchface_menu();
                     break;
                 default:
                     render_watch_display(temp, hum, ax, ay, az, &timeinfo);

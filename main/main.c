@@ -24,6 +24,9 @@
 
 #include "display.h"
 #include "watchfaces.h"
+#include "settings.h"
+#include "power.h"
+#include "input.h"
 
 /* WiFi credentials - configure these for your network */
 #define WIFI_SSID      "SUPERONLINE_WiFi_C8AF"
@@ -246,33 +249,6 @@ static esp_err_t i2c_probe_addr(uint8_t addr) {
     esp_err_t err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
     i2c_cmd_link_delete(cmd);
     return err;
-}
-
-/* ---------- Button GPIO initialization ---------- */
-static void gpio_init_buttons(void) {
-    // Configure button pins as inputs with pull-ups
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << BUTTON_UP_GPIO) | (1ULL << BUTTON_DOWN_GPIO) | (1ULL << BUTTON_OK_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&io_conf);
-    ESP_LOGI(TAG, "Button GPIOs initialized: UP=%d DOWN=%d OK=%d", BUTTON_UP_GPIO, BUTTON_DOWN_GPIO, BUTTON_OK_GPIO);
-}
-
-/* Get button states (0 = pressed, 1 = released due to pull-up) */
-static bool button_up_pressed(void) {
-    return gpio_get_level(BUTTON_UP_GPIO) == 0;
-}
-
-static bool button_down_pressed(void) {
-    return gpio_get_level(BUTTON_DOWN_GPIO) == 0;
-}
-
-static bool button_ok_pressed(void) {
-    return gpio_get_level(BUTTON_OK_GPIO) == 0;
 }
 
 /* ---------- ADXL345 ---------- */
@@ -631,6 +607,10 @@ static void wifi_init_sta(void)
 static void main_task(void *arg) {
     ESP_LOGI(TAG, "main_task starting: init sensors & display");
 
+    // Initialize settings from NVS
+    settings_init();
+    settings_load(&motion_threshold_editable, &screen_timeout_editable, (int*)&current_watchface);
+
     adxl345_init(); // ignore error but good to try
     // try soft reset aht (not required always)
     {
@@ -650,8 +630,10 @@ static void main_task(void *arg) {
     }
     ESP_LOGI(TAG, "Display ready");
     
-    // Initialize buttons
-    gpio_init_buttons();
+    // Initialize event-driven button input
+    if (input_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Input module init failed - continuing without buttons");
+    }
 
     // setup sntp
     sntp_initialize();
@@ -663,41 +645,60 @@ static void main_task(void *arg) {
         ESP_LOGI(TAG, "SNTP sync OK");
     }
 
-    // Button state tracking for debounce
-    bool last_up = false, last_down = false, last_ok = false;
+    // Initialize time tracking (must get time first, then set last_motion_time)
+    time_t now;
+    time(&now);
+    now += 3*3600; // apply UTC+3 offset
+    last_motion_time_s = now; // Initialize so inactivity starts from zero on boot
     
-    // main loop: refresh every 1s
+    // main loop: adaptive polling based on power mode
     while (1) {
-        // read sensors
-        float temp=0.0f, hum=0.0f;
-        if (aht_read(&temp,&hum) != ESP_OK) {
-            // do nothing, leave zeros
-        }
-        int16_t ax=0, ay=0, az=0;
-        if (adxl345_read(&ax,&ay,&az) != ESP_OK) {
-            ax=ay=az=0;
-        }
-
-        // get time (UTC) then add +3h for Turkey
-        time_t now;
+        // get current time (UTC+3)
         time(&now);
         now += 3*3600; // apply UTC+3 offset
         struct tm timeinfo;
         gmtime_r(&now, &timeinfo);
 
-        // Detect motion and update screen state
-        bool motion_detected = detect_motion(ax, ay, az);
+        // Calculate inactivity time and update power mode
+        uint32_t inactivity_secs = (now - last_motion_time_s);
+        power_update_mode(inactivity_secs);
+        uint32_t poll_interval_ms = power_get_poll_interval_ms();
+
+        // Only read sensors in active/idle modes (skip in deep sleep to save power)
+        power_mode_t mode = power_get_mode();
+        float temp=0.0f, hum=0.0f;
+        int16_t ax=0, ay=0, az=0;
+        
+        if (mode != POWER_DEEP_SLEEP) {
+            // Read sensors normally in active/idle/light-sleep modes
+            if (aht_read(&temp,&hum) != ESP_OK) {
+                // do nothing, leave zeros
+            }
+            if (adxl345_read(&ax,&ay,&az) != ESP_OK) {
+                ax=ay=az=0;
+            }
+        } else {
+            // In deep sleep, only read motion if motion was detected (via ISR in future)
+            // For now, just skip sensor reads to conserve power
+            ax=ay=az=0;
+            temp=hum=0.0f;
+        }
+
+        // Detect motion and update screen state (only in active/idle modes)
+        bool motion_detected = false;
+        if (mode != POWER_DEEP_SLEEP) {
+            motion_detected = detect_motion(ax, ay, az);
+        }
         update_screen_state(motion_detected, now);
 
-        // Handle button inputs with simple debounce
-        bool up_pressed = button_up_pressed();
-        bool down_pressed = button_down_pressed();
-        bool ok_pressed = button_ok_pressed();
+        // Handle event-driven button inputs from queue
+        button_event_t btn_event;
+        bool button_pressed = false;
         
-        // Any button press wakes the screen and enters menu
-        bool any_button_pressed = (up_pressed && !last_up) || (down_pressed && !last_down) || (ok_pressed && !last_ok);
-        
-        if (any_button_pressed) {
+        // Check if any button event is available (non-blocking)
+        if (input_get_event(&btn_event)) {
+            button_pressed = true;
+            
             // Wake screen if it's off
             if (!screen_on) {
                 ESP_LOGI(TAG, "Button pressed - waking screen");
@@ -711,7 +712,7 @@ static void main_task(void *arg) {
         }
         
         // Handle button inputs with context-aware navigation
-        if (up_pressed && !last_up) {
+        if (button_pressed && btn_event == BTN_UP_PRESS) {
             ESP_LOGI(TAG, "UP button pressed");
             
             if (current_menu == MENU_ROOT) {
@@ -732,10 +733,12 @@ static void main_task(void *arg) {
                     motion_threshold_editable += 10;
                     if (motion_threshold_editable > 500) motion_threshold_editable = 500;
                     ESP_LOGI(TAG, "Motion threshold: %d", motion_threshold_editable);
+                    settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
                 } else if (current_setting == SETTINGS_SCREEN_TIMEOUT) {
                     screen_timeout_editable += 1;
                     if (screen_timeout_editable > 60) screen_timeout_editable = 60;
                     ESP_LOGI(TAG, "Screen timeout: %d", screen_timeout_editable);
+                    settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
                 }
             } else if (current_menu == MENU_SETTINGS) {
                 // Menu navigation up
@@ -752,7 +755,7 @@ static void main_task(void *arg) {
             }
         }
         
-        if (down_pressed && !last_down) {
+        if (button_pressed && btn_event == BTN_DOWN_PRESS) {
             ESP_LOGI(TAG, "DOWN button pressed");
             
             if (current_menu == MENU_ROOT) {
@@ -773,10 +776,12 @@ static void main_task(void *arg) {
                     motion_threshold_editable -= 10;
                     if (motion_threshold_editable < 10) motion_threshold_editable = 10;
                     ESP_LOGI(TAG, "Motion threshold: %d", motion_threshold_editable);
+                    settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
                 } else if (current_setting == SETTINGS_SCREEN_TIMEOUT) {
                     screen_timeout_editable -= 1;
                     if (screen_timeout_editable < 1) screen_timeout_editable = 1;
                     ESP_LOGI(TAG, "Screen timeout: %d", screen_timeout_editable);
+                    settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
                 }
             } else if (current_menu == MENU_SETTINGS) {
                 // Menu navigation down
@@ -793,7 +798,7 @@ static void main_task(void *arg) {
             }
         }
         
-        if (ok_pressed && !last_ok) {
+        if (button_pressed && btn_event == BTN_OK_PRESS) {
             ESP_LOGI(TAG, "OK button pressed");
             
             if (current_menu == MENU_WATCH) {
@@ -818,6 +823,7 @@ static void main_task(void *arg) {
                 // OK selects watchface
                 current_watchface = watchface_selection;
                 ESP_LOGI(TAG, "Selected watchface: %d", watchface_selection);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
                 current_menu = MENU_WATCH;
                 editing_mode = false;
             } else if (current_menu == MENU_SETTINGS && !editing_mode) {
@@ -827,9 +833,8 @@ static void main_task(void *arg) {
             } else if (current_menu == MENU_SETTINGS && editing_mode) {
                 // Exit edit mode and save changes
                 editing_mode = false;
-                // Apply edited values to runtime settings
-                // (we still use motion_threshold_editable/screen_timeout_editable in logic)
-                ESP_LOGI(TAG, "Exiting edit mode - changes saved");
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+                ESP_LOGI(TAG, "Exiting edit mode - changes saved to NVS");
             } else {
                 // In other submenus (e.g., sensor list), OK returns to watch
                 current_menu = MENU_WATCH;
@@ -837,10 +842,6 @@ static void main_task(void *arg) {
                 ESP_LOGI(TAG, "Returning to watch display");
             }
         }
-        
-        last_up = up_pressed;
-        last_down = down_pressed;
-        last_ok = ok_pressed;
 
         // Auto-exit menu after 10 seconds of inactivity
         if (current_menu != MENU_WATCH && (now - menu_last_activity_s) > 10) {
@@ -879,7 +880,8 @@ static void main_task(void *arg) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));  // Faster polling for button responsiveness
+        // Sleep for adaptive interval based on power mode (saves battery)
+        vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
     }
 }
 

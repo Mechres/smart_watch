@@ -333,14 +333,14 @@ static bool detect_motion(int16_t ax, int16_t ay, int16_t az) {
     // Calculate magnitude of acceleration delta
     int32_t delta_mag_sq = (int32_t)dx*dx + (int32_t)dy*dy + (int32_t)dz*dz;
     int32_t threshold_sq = (int32_t)motion_threshold_editable * motion_threshold_editable;
-    
+    /* 
     // Log for debugging (remove later if working)
     static int log_counter = 0;
     if (log_counter++ % 5 == 0) {  // Log every 5 samples to avoid spam
         ESP_LOGI(TAG, "ACC: ax=%d ay=%d az=%d | delta: dx=%d dy=%d dz=%d | mag_sq=%ld thr_sq=%ld | motion=%d", 
                  ax, ay, az, dx, dy, dz, delta_mag_sq, threshold_sq, delta_mag_sq > threshold_sq);
     }
-    
+    */
     return delta_mag_sq > threshold_sq;
 }
 

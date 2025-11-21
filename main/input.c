@@ -19,12 +19,6 @@
 static const char *TAG = "input";
 static QueueHandle_t button_queue = NULL;
 
-/* ISR handler for button presses */
-static void IRAM_ATTR gpio_isr_handler(void *arg) {
-    button_event_t event = (button_event_t)(uintptr_t)arg;
-    xQueueSendFromISR(button_queue, &event, NULL);
-}
-
 /* Debounce task: monitors GPIO and posts events after debounce delay */
 static void debounce_task(void *arg) {
     bool last_up = false, last_down = false, last_ok = false;

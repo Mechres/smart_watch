@@ -30,6 +30,14 @@ void power_update_mode(uint32_t inactivity_secs) {
     if (new_mode != current_mode) {
         ESP_LOGI(TAG, "Transitioning from mode %d to %d (inactivity=%u s)", current_mode, new_mode, inactivity_secs);
         current_mode = new_mode;
+        
+        if (current_mode == POWER_DEEP_SLEEP) {
+            ESP_LOGI(TAG, "Entering deep sleep...");
+            // Enable wakeup on GPIO 1 (High level)
+            // Note: ADXL345 INT pin active high/low depends on config. Default is active HIGH.
+            esp_deep_sleep_enable_gpio_wakeup(BIT(1), ESP_GPIO_WAKEUP_GPIO_HIGH);
+            esp_deep_sleep_start();
+        }
     }
 }
 

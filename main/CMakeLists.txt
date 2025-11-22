@@ -1,2 +1,2 @@
-idf_component_register(SRCS "input.c" "power.c" "settings.c" "watchfaces.c" "display.c" "main.c"
+idf_component_register(SRCS "main.c" "display.c" "settings.c" "power.c" "input.c" "sensors.c" "wifi_manager.c" "menu.c" "battery.c" "watchfaces.c"
                     INCLUDE_DIRS ".")

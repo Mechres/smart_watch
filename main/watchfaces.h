@@ -6,9 +6,9 @@
 #include <stdint.h>
 #include <time.h>
 
-void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo);
-void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo);
-void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo);
-void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo);
+void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
+void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
+void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
+void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
 
 #endif // WATCHFACES_H

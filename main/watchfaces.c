@@ -6,7 +6,7 @@
 #include "watchfaces.h"
 
 /* Digital watchface - big time display (original) */
-void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo) {
+void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
     fb_clear();
     char buf[64];
 
@@ -31,10 +31,14 @@ void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int
     fb_draw_text(0, 44, buf);
     snprintf(buf, sizeof(buf), "Z:%d", az);
     fb_draw_text(80, 44, buf);
+
+    // Battery top right
+    snprintf(buf, sizeof(buf), "%d%%", batt_pct);
+    fb_draw_text(100, 0, buf);
 }
 
 /* Analog-inspired watchface */
-void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo) {
+void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
     fb_clear();
     char buf[64];
     const char *months_tr[12] = {"Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"};
@@ -60,10 +64,14 @@ void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int1
     // Temperature
     snprintf(buf, sizeof(buf), "Temp: %.1fC  Hum: %.0f%%", temp, hum);
     fb_draw_text(0, 45, buf);
+
+    // Battery
+    snprintf(buf, sizeof(buf), "Bat:%d%%", batt_pct);
+    fb_draw_text(0, 0, buf);
 }
 
 /* Minimal watchface - time only */
-void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo) {
+void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
     fb_clear();
     char buf[64];
     const char *months_tr[12] = {"Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"};
@@ -84,7 +92,7 @@ void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int
 }
 
 /* Compact watchface - all info compact */
-void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int16_t az, struct tm *timeinfo) {
+void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
     fb_clear();
     char buf[64];
     const char *months_tr[12] = {"Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"};
@@ -107,6 +115,6 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
     fb_draw_text(0, 36, buf);
 
     // Motion status (simple)
-    snprintf(buf, sizeof(buf), "Motion: Active");
+    snprintf(buf, sizeof(buf), "Motion: Active  B:%d%%", batt_pct);
     fb_draw_text(0, 48, buf);
 }

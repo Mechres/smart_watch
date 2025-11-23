@@ -16,6 +16,8 @@ static const char *TAG = "WiFiManager";
 
 static EventGroupHandle_t s_wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
+static bool s_sntp_initialized = false;
+static void sntp_initialize(void);
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data)
@@ -28,6 +30,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        if (!s_sntp_initialized) {
+            sntp_initialize();
+            s_sntp_initialized = true;
+        }
     }
 }
 
@@ -57,16 +63,8 @@ void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "WiFi init finished. Connecting to SSID:%s", WIFI_SSID);
-
-    EventBits_t bits =
-        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE,
-                            pdMS_TO_TICKS(15000));
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to AP");
-    } else {
-        ESP_LOGW(TAG, "Failed to connect to AP within timeout");
-    }
+    // Non-blocking: we don't wait here anymore.
+    // Connection result will be handled in event handler.
 }
 
 static void sntp_initialize(void)
@@ -77,31 +75,7 @@ static void sntp_initialize(void)
     esp_sntp_init();
 }
 
-static bool wait_for_sntp_sync(int timeout_s)
-{
-    int retry = 0;
-    const int retry_count = timeout_s * 2;
 
-    while (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && retry < retry_count)
-    {
-        ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        retry++;
-    }
-
-    return (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED);
-}
-
-void sntp_initialize_and_wait(void) {
-    sntp_initialize();
-    ESP_LOGI(TAG, "SNTP started, waiting sync...");
-    bool synced = wait_for_sntp_sync(10); // 10 seconds timeout
-    if (!synced) {
-        ESP_LOGW(TAG, "SNTP not synced within timeout; will still show UTC+3 local time when possible");
-    } else {
-        ESP_LOGI(TAG, "SNTP sync OK");
-    }
-}
 
 void wifi_stop(void) {
     ESP_LOGI(TAG, "Stopping WiFi...");

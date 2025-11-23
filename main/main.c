@@ -11,6 +11,7 @@
 #include "nvs_flash.h"
 #include "driver/i2c.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 
 #include "display.h"
 #include "watchfaces.h"
@@ -141,25 +142,25 @@ static void main_task(void *arg) {
         ESP_LOGE(TAG, "Input module init failed - continuing without buttons");
     }
 
-    // setup sntp
-    sntp_initialize_and_wait();
-
-    // Initialize time tracking (must get time first, then set last_motion_time)
-    time_t now;
-    time(&now);
-    now += 3*3600; // apply UTC+3 offset
-    last_motion_time_s = now; // Initialize so inactivity starts from zero on boot
+    // Initialize time tracking (use monotonic time for timeouts to avoid SNTP jumps)
+    int64_t now_mono_us = esp_timer_get_time();
+    last_motion_time_s = (int32_t)(now_mono_us / 1000000);
     
     // main loop: adaptive polling based on power mode
     while (1) {
         // get current time (UTC+3)
+        time_t now;
         time(&now);
         now += 3*3600; // apply UTC+3 offset
         struct tm timeinfo;
         gmtime_r(&now, &timeinfo);
 
+        // Use monotonic time for timeouts
+        int64_t current_mono_us = esp_timer_get_time();
+        int32_t current_mono_s = (int32_t)(current_mono_us / 1000000);
+
         // Calculate inactivity time and update power mode
-        uint32_t inactivity_secs = (now - last_motion_time_s);
+        uint32_t inactivity_secs = (current_mono_s - last_motion_time_s);
         power_update_mode(inactivity_secs);
         uint32_t poll_interval_ms = power_get_poll_interval_ms();
 
@@ -190,7 +191,7 @@ static void main_task(void *arg) {
         if (mode != POWER_DEEP_SLEEP) {
             motion_detected = detect_motion(ax, ay, az);
         }
-        update_screen_state(motion_detected, now);
+        update_screen_state(motion_detected, current_mono_s);
 
         // Handle event-driven button inputs from queue
         button_event_t btn_event;
@@ -202,17 +203,21 @@ static void main_task(void *arg) {
                 ESP_LOGI(TAG, "Button pressed - waking screen");
                 sh1106_display_on();
                 screen_on = true;
+                // Update activity time so it doesn't immediately sleep
+                last_motion_time_s = current_mono_s;
+                // Consume the event (do NOT pass to menu) so the first press only wakes the screen
+            } else {
+                // Screen is already on, pass event to menu system
+                
+                // Update both motion and menu activity times to keep screen on
+                last_motion_time_s = current_mono_s;
+                
+                menu_handle_button(btn_event, current_mono_s);
             }
-
-            // Update both motion and menu activity times to keep screen on
-            last_motion_time_s = now;
-            
-            // Pass event to menu system
-            menu_handle_button(btn_event, now);
         }
         
         // Check menu timeout
-        menu_check_timeout(now);
+        menu_check_timeout(current_mono_s);
 
         // Only render if screen is on
         if (screen_on) {

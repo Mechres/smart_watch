@@ -29,6 +29,7 @@ typedef enum {
 typedef enum {
     SETTINGS_MOTION_THRESHOLD = 0,
     SETTINGS_SCREEN_TIMEOUT,
+    SETTINGS_BACK,
     SETTINGS_COUNT
 } settings_item_t;
 
@@ -39,6 +40,7 @@ typedef enum {
     SENSOR_ACCEL_Y,
     SENSOR_ACCEL_Z,
     SENSOR_BATTERY,
+    SENSOR_BACK,
     SENSOR_COUNT
 } sensor_item_t;
 
@@ -116,6 +118,9 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
             case SENSOR_BATTERY:
                 snprintf(buf, sizeof(buf), "%c Batt: %d%% %dmV", prefix, batt_pct, batt_mv);
                 break;
+            case SENSOR_BACK:
+                snprintf(buf, sizeof(buf), "%c [Back]", prefix);
+                break;
         }
         
         fb_draw_text(0, y_pos, buf);
@@ -159,6 +164,13 @@ static void render_settings_menu(void) {
         snprintf(buf, sizeof(buf), "  Value: %d s", screen_timeout_editable);
     }
     fb_draw_text(0, 47, buf);
+
+    // Back
+    if (current_setting == SETTINGS_BACK) {
+        fb_draw_text(0, 59, "> [Back]");
+    } else {
+        fb_draw_text(0, 59, "  [Back]");
+    }
 }
 
 static void render_root_menu(void) {
@@ -167,6 +179,7 @@ static void render_root_menu(void) {
     if (root_selection == 0) fb_draw_text(0, 12, "> Sensors"); else fb_draw_text(0, 12, "  Sensors");
     if (root_selection == 1) fb_draw_text(0, 24, "> Settings"); else fb_draw_text(0, 24, "  Settings");
     if (root_selection == 2) fb_draw_text(0, 36, "> Watchface"); else fb_draw_text(0, 36, "  Watchface");
+    if (root_selection == 3) fb_draw_text(0, 48, "> [Back]"); else fb_draw_text(0, 48, "  [Back]");
 }
 
 static void render_watchface_menu(void) {
@@ -193,6 +206,14 @@ static void render_watchface_menu(void) {
         snprintf(buf, sizeof(buf), "%c %s", prefix, names[i]);
         fb_draw_text(0, y_pos, buf);
         y_pos += 10;
+    }
+    
+    // Show Back option at the end if scrolled there
+    if (watchface_selection == WATCHFACE_COUNT) {
+         fb_draw_text(0, y_pos, "> [Back]");
+    } else if (start_idx + 3 >= WATCHFACE_COUNT) {
+         // If we are at the end of list, show [Back] as non-selected
+         fb_draw_text(0, y_pos, "  [Back]");
     }
     
     if (start_idx > 0) fb_draw_text(0, 52, "  [up]");
@@ -268,9 +289,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            if (root_selection < 2) root_selection++;
+            if (root_selection < 3) root_selection++;
         } else if (current_menu == MENU_WATCHFACE) {
-            if (watchface_selection < WATCHFACE_COUNT - 1) watchface_selection++;
+            if (watchface_selection < WATCHFACE_COUNT) watchface_selection++;
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable -= 10;
@@ -296,17 +317,31 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             else if (root_selection == 2) {
                 current_menu = MENU_WATCHFACE;
                 watchface_selection = current_watchface;
+            } else if (root_selection == 3) {
+                current_menu = MENU_WATCH; // Back to watch
             }
         } else if (current_menu == MENU_WATCHFACE) {
-            current_watchface = watchface_selection;
-            settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
-            current_menu = MENU_WATCH;
-            editing_mode = false;
+            if (watchface_selection == WATCHFACE_COUNT) {
+                current_menu = MENU_ROOT; // Back
+            } else {
+                current_watchface = watchface_selection;
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+                current_menu = MENU_WATCH;
+                editing_mode = false;
+            }
         } else if (current_menu == MENU_SETTINGS && !editing_mode) {
-            editing_mode = true;
+            if (current_setting == SETTINGS_BACK) {
+                current_menu = MENU_ROOT; // Back
+            } else {
+                editing_mode = true;
+            }
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             editing_mode = false;
             settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+        } else if (current_menu == MENU_SENSOR_DATA) {
+            if (current_sensor == SENSOR_BACK) {
+                current_menu = MENU_ROOT;
+            }
         } else {
             current_menu = MENU_WATCH;
             editing_mode = false;

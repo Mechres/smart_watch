@@ -4,6 +4,10 @@
 #include "display.h"
 #include "watchfaces.h"
 #include "pedometer.h"
+#include "weather.h"
+
+
+
 
 /* Digital watchface - big time display (original) */
 void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
@@ -36,14 +40,17 @@ void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int
     snprintf(buf, sizeof(buf), "Steps: %d", steps);
     fb_draw_text(0, 50, buf);
 
+    // Weather info
+    weather_data_t w = weather_get_current();
+    if (w.valid) {
+        const char *desc = weather_get_desc(w.weather_code);
+        snprintf(buf, sizeof(buf), "%.1fC %s", w.temp_c, desc);
+        fb_draw_text(0, 60, buf);
+    }
+
     // Battery top right
     snprintf(buf, sizeof(buf), "%d%%", batt_pct);
     fb_draw_text(100, 0, buf);
-    // Battery bar
-    fb_draw_rect(120, 0, 8, 5, 1);
-    int fill_h = (batt_pct * 3) / 100;
-    if(fill_h > 3) fill_h = 3;
-    fb_fill_rect(122, 1, fill_h * 2, 3, 1);
 }
 
 /* Analog-inspired watchface */
@@ -87,6 +94,15 @@ void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int1
     int steps = pedometer_get_steps();
     snprintf(buf, sizeof(buf), "Stp:%d", steps);
     fb_draw_text(0, 54, buf);
+/*
+    // Weather info
+    weather_data_t w = weather_get_current();
+    if (w.valid) {
+        const char *desc = weather_get_desc(w.weather_code);
+        snprintf(buf, sizeof(buf), "%.1fC %s", w.temp_c, desc);
+        fb_draw_text(0, 60, buf);
+    }
+        */
 }
 
 /* Minimal watchface - time only */
@@ -96,6 +112,13 @@ void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int
     const char *months_tr[12] = {"Oca","Sub","Mar","Nis","May","Haz","Tem","Agu","Eyl","Eki","Kas","Ara"};
 
     // Extra large time (scale 3)
+    // Weather info (if valid)
+    weather_data_t w = weather_get_current();
+    if (w.valid) {
+        const char *desc = weather_get_desc(w.weather_code);
+        snprintf(buf, sizeof(buf), "%.1fC %s", w.temp_c, desc);
+        fb_draw_text(0, 70, buf);
+    }
     snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min);
     int len = strlen(buf);
     int char_width = 6 * 3;
@@ -132,6 +155,14 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
     int steps = pedometer_get_steps();
     snprintf(buf, sizeof(buf), "Steps: %d", steps);
     fb_draw_text(0, 36, buf);
+
+    // Weather info
+    weather_data_t w = weather_get_current();
+    if (w.valid) {
+        const char *desc = weather_get_desc(w.weather_code);
+        snprintf(buf, sizeof(buf), "%.1fC %s", w.temp_c, desc);
+        fb_draw_text(0, 48, buf);
+    }
 
     // Day of week
     const char *days[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};

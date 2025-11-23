@@ -88,3 +88,9 @@ void wifi_start(void) {
     esp_wifi_start();
     esp_wifi_connect();
 }
+
+bool wifi_is_connected(void) {
+    if (s_wifi_event_group == NULL) return false;
+    EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
+    return (bits & WIFI_CONNECTED_BIT) != 0;
+}

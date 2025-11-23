@@ -23,6 +23,7 @@
 #include "menu.h"
 #include "battery.h"
 #include "pedometer.h"
+#include "weather.h"
 
 static const char *TAG = "SmartWatch";
 
@@ -120,6 +121,7 @@ static void main_task(void *arg) {
     sensors_init();
     battery_init();
     pedometer_init();
+    weather_init();
     
     // Configure GPIO 1 for tap interrupt
     gpio_config_t io_conf = {};
@@ -147,7 +149,8 @@ static void main_task(void *arg) {
     // Initialize time tracking (use monotonic time for timeouts to avoid SNTP jumps)
     int64_t now_mono_us = esp_timer_get_time();
     last_motion_time_s = (int32_t)(now_mono_us / 1000000);
-    
+    int32_t last_weather_update_s = -9999; // Force update on start  // <-- ADD THIS LINE
+
     // main loop: adaptive polling based on power mode
     while (1) {
         // get current time (UTC+3)
@@ -182,6 +185,16 @@ static void main_task(void *arg) {
             sensors_read_temp_hum(&temp, &hum);
             sensors_read_accel(&ax, &ay, &az);
             pedometer_process(ax, ay, az);
+            // Update weather every 30 minutes (1800 seconds) if WiFi is connected
+            if (wifi_is_connected() && (current_mono_s - last_weather_update_s) > 1800) {
+                ESP_LOGI(TAG, "Fetching weather...");
+                if (weather_fetch() == ESP_OK) {
+                    last_weather_update_s = current_mono_s;
+                } else {
+                    // Retry sooner if failed (e.g. 1 min)
+                    last_weather_update_s = current_mono_s - 1800 + 60;
+                }
+            }
         } else {
             // In deep sleep, only read motion if motion was detected (via ISR in future)
             // For now, just skip sensor reads to conserve power

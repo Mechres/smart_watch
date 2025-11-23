@@ -14,4 +14,7 @@ void wifi_init_sta(void);
 /* Initialize SNTP and wait for sync */
 void sntp_initialize_and_wait(void);
 
+void wifi_stop(void);
+void wifi_start(void);
+
 #endif // WIFI_MANAGER_H

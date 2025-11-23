@@ -3,6 +3,7 @@
 #include "power.h"
 #include "esp_sleep.h"
 #include "esp_log.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "power";
 
@@ -29,6 +30,16 @@ void power_update_mode(uint32_t inactivity_secs) {
     
     if (new_mode != current_mode) {
         ESP_LOGI(TAG, "Transitioning from mode %d to %d (inactivity=%u s)", current_mode, new_mode, inactivity_secs);
+        
+        // Handle WiFi power
+        if (new_mode == POWER_ACTIVE && current_mode != POWER_ACTIVE) {
+            // Waking up -> Start WiFi
+            wifi_start();
+        } else if (new_mode != POWER_ACTIVE && current_mode == POWER_ACTIVE) {
+            // Going to sleep (Light or Deep) -> Stop WiFi
+            wifi_stop();
+        }
+
         current_mode = new_mode;
         
         if (current_mode == POWER_DEEP_SLEEP) {

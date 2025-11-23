@@ -102,3 +102,15 @@ void sntp_initialize_and_wait(void) {
         ESP_LOGI(TAG, "SNTP sync OK");
     }
 }
+
+void wifi_stop(void) {
+    ESP_LOGI(TAG, "Stopping WiFi...");
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+}
+
+void wifi_start(void) {
+    ESP_LOGI(TAG, "Starting WiFi...");
+    esp_wifi_start();
+    esp_wifi_connect();
+}

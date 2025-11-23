@@ -41,7 +41,7 @@ int battery_get_voltage_mv(void) {
 int battery_get_percentage(void) {
     int mv = battery_get_voltage_mv();
     // Simple linear map 3.0V (0%) to 4.2V (100%)
-    if (mv < 3000) return 0;
-    if (mv > 4200) return 100;
-    return (mv - 3000) * 100 / 1200;
+    if (mv < 2000) return 0;
+    if (mv > 3000) return 100;
+    return (mv - 2000) * 100 / 1000;
 }

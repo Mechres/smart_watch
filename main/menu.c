@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include <stdio.h>
 #include <sys/time.h>
+#include "pedometer.h"
 
 static const char *TAG = "Menu";
 
@@ -36,6 +37,7 @@ typedef enum {
 typedef enum {
     SENSOR_TEMP = 0,
     SENSOR_HUMIDITY,
+    SENSOR_STEPS,
     SENSOR_ACCEL_X,
     SENSOR_ACCEL_Y,
     SENSOR_ACCEL_Z,
@@ -84,11 +86,21 @@ void menu_check_timeout(int32_t current_time_s) {
 }
 
 /* Render helpers */
+static void draw_menu_item(int y, const char *text, bool selected) {
+    if (selected) {
+        fb_fill_rect(0, y, DISP_WIDTH, 10, 1);
+        fb_draw_text_ex(2, y + 1, text, 0, -1);
+    } else {
+        fb_draw_text(2, y + 1, text);
+    }
+}
+
 static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct) {
     fb_clear();
     char buf[64];
     
     fb_draw_text(0, 0, "===SENSORS===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
     
     int start_idx = current_sensor - 1;
     if (start_idx < 0) start_idx = 0;
@@ -97,38 +109,41 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
     int y_pos = 12;
     for (int i = start_idx; i < start_idx + 3 && i < SENSOR_COUNT; i++) {
         bool is_selected = (i == current_sensor);
-        char prefix = is_selected ? '>' : ' ';
         
         switch (i) {
             case SENSOR_TEMP:
-                snprintf(buf, sizeof(buf), "%c Temp: %.2f C", prefix, temp);
+                snprintf(buf, sizeof(buf), "Temp: %.2f C", temp);
                 break;
             case SENSOR_HUMIDITY:
-                snprintf(buf, sizeof(buf), "%c Humidity: %.1f%%", prefix, hum);
+                snprintf(buf, sizeof(buf), "Humidity: %.1f%%", hum);
+                break;
+            case SENSOR_STEPS:
+                snprintf(buf, sizeof(buf), "Steps: %d", pedometer_get_steps());
                 break;
             case SENSOR_ACCEL_X:
-                snprintf(buf, sizeof(buf), "%c AccelX: %d", prefix, ax);
+                snprintf(buf, sizeof(buf), "AccelX: %d", ax);
                 break;
             case SENSOR_ACCEL_Y:
-                snprintf(buf, sizeof(buf), "%c AccelY: %d", prefix, ay);
+                snprintf(buf, sizeof(buf), "AccelY: %d", ay);
                 break;
             case SENSOR_ACCEL_Z:
-                snprintf(buf, sizeof(buf), "%c AccelZ: %d", prefix, az);
+                snprintf(buf, sizeof(buf), "AccelZ: %d", az);
                 break;
             case SENSOR_BATTERY:
-                snprintf(buf, sizeof(buf), "%c Batt: %d%% %dmV", prefix, batt_pct, batt_mv);
+                snprintf(buf, sizeof(buf), "Batt: %d%% %dmV", batt_pct, batt_mv);
                 break;
             case SENSOR_BACK:
-                snprintf(buf, sizeof(buf), "%c [Back]", prefix);
+                snprintf(buf, sizeof(buf), "[Back]");
                 break;
         }
         
-        fb_draw_text(0, y_pos, buf);
-        y_pos += 10;
+        draw_menu_item(y_pos, buf, is_selected);
+        y_pos += 11;
     }
     
-    if (start_idx > 0) fb_draw_text(0, 52, "  [up]");
-    if (start_idx + 3 < SENSOR_COUNT) fb_draw_text(70, 52, "[dn]");
+    // Scroll indicators
+    if (start_idx > 0) fb_draw_text(120, 12, "^");
+    if (start_idx + 3 < SENSOR_COUNT) fb_draw_text(120, 34, "v");
 }
 
 static void render_settings_menu(void) {
@@ -136,50 +151,43 @@ static void render_settings_menu(void) {
     char buf[64];
     
     fb_draw_text(0, 0, "===SETTINGS===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
     
     // Motion Threshold
-    if (current_setting == SETTINGS_MOTION_THRESHOLD) {
-        fb_draw_text(0, 12, "> Motion Thresh");
-    } else {
-        fb_draw_text(0, 12, "  Motion Thresh");
-    }
-    
     if (current_setting == SETTINGS_MOTION_THRESHOLD && editing_mode) {
-        snprintf(buf, sizeof(buf), "  [%d]  <OK to exit>", motion_threshold_editable);
+        snprintf(buf, sizeof(buf), "Motion: [%d]", motion_threshold_editable);
+        fb_fill_rect(0, 12, DISP_WIDTH, 10, 1);
+        fb_draw_text_ex(2, 13, buf, 0, -1);
+        fb_draw_text(100, 13, "<>");
     } else {
-        snprintf(buf, sizeof(buf), "  Value: %d", motion_threshold_editable);
+        snprintf(buf, sizeof(buf), "Motion: %d", motion_threshold_editable);
+        draw_menu_item(12, buf, current_setting == SETTINGS_MOTION_THRESHOLD);
     }
-    fb_draw_text(0, 22, buf);
     
     // Screen Timeout
-    if (current_setting == SETTINGS_SCREEN_TIMEOUT) {
-        fb_draw_text(0, 37, "> Screen Timeout");
-    } else {
-        fb_draw_text(0, 37, "  Screen Timeout");
-    }
-    
     if (current_setting == SETTINGS_SCREEN_TIMEOUT && editing_mode) {
-        snprintf(buf, sizeof(buf), "  [%d]s  <OK to exit>", screen_timeout_editable);
+        snprintf(buf, sizeof(buf), "Timeout: [%d]s", screen_timeout_editable);
+        fb_fill_rect(0, 24, DISP_WIDTH, 10, 1);
+        fb_draw_text_ex(2, 25, buf, 0, -1);
+        fb_draw_text(100, 25, "<>");
     } else {
-        snprintf(buf, sizeof(buf), "  Value: %d s", screen_timeout_editable);
+        snprintf(buf, sizeof(buf), "Timeout: %d s", screen_timeout_editable);
+        draw_menu_item(24, buf, current_setting == SETTINGS_SCREEN_TIMEOUT);
     }
-    fb_draw_text(0, 47, buf);
 
     // Back
-    if (current_setting == SETTINGS_BACK) {
-        fb_draw_text(0, 59, "> [Back]");
-    } else {
-        fb_draw_text(0, 59, "  [Back]");
-    }
+    draw_menu_item(36, "[Back]", current_setting == SETTINGS_BACK);
 }
 
 static void render_root_menu(void) {
     fb_clear();
     fb_draw_text(0, 0, "===MENU===");
-    if (root_selection == 0) fb_draw_text(0, 12, "> Sensors"); else fb_draw_text(0, 12, "  Sensors");
-    if (root_selection == 1) fb_draw_text(0, 24, "> Settings"); else fb_draw_text(0, 24, "  Settings");
-    if (root_selection == 2) fb_draw_text(0, 36, "> Watchface"); else fb_draw_text(0, 36, "  Watchface");
-    if (root_selection == 3) fb_draw_text(0, 48, "> [Back]"); else fb_draw_text(0, 48, "  [Back]");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+
+    draw_menu_item(12, "Sensors", root_selection == 0);
+    draw_menu_item(24, "Settings", root_selection == 1);
+    draw_menu_item(36, "Watchface", root_selection == 2);
+    draw_menu_item(48, "[Back]", root_selection == 3);
 }
 
 static void render_watchface_menu(void) {
@@ -187,6 +195,7 @@ static void render_watchface_menu(void) {
     char buf[64];
     
     fb_draw_text(0, 0, "===WATCHFACE===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
     
     const char *names[WATCHFACE_COUNT] = {
         "Digital",
@@ -202,22 +211,19 @@ static void render_watchface_menu(void) {
     int y_pos = 12;
     for (int i = start_idx; i < start_idx + 3 && i < WATCHFACE_COUNT; i++) {
         bool is_selected = (i == watchface_selection);
-        char prefix = is_selected ? '>' : ' ';
-        snprintf(buf, sizeof(buf), "%c %s", prefix, names[i]);
-        fb_draw_text(0, y_pos, buf);
-        y_pos += 10;
+        draw_menu_item(y_pos, names[i], is_selected);
+        y_pos += 11;
     }
     
     // Show Back option at the end if scrolled there
     if (watchface_selection == WATCHFACE_COUNT) {
-         fb_draw_text(0, y_pos, "> [Back]");
+         draw_menu_item(y_pos, "[Back]", true);
     } else if (start_idx + 3 >= WATCHFACE_COUNT) {
-         // If we are at the end of list, show [Back] as non-selected
-         fb_draw_text(0, y_pos, "  [Back]");
+         draw_menu_item(y_pos, "[Back]", false);
     }
     
-    if (start_idx > 0) fb_draw_text(0, 52, "  [up]");
-    if (start_idx + 3 < WATCHFACE_COUNT) fb_draw_text(70, 52, "[dn]");
+    if (start_idx > 0) fb_draw_text(120, 12, "^");
+    if (start_idx + 3 < WATCHFACE_COUNT) fb_draw_text(120, 34, "v");
 }
 
 static void render_watch_display(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {

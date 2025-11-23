@@ -12,7 +12,15 @@
 void fb_clear(void);
 void fb_set_pixel(int x, int y, int color);
 void fb_draw_char(int x, int y, char c);
+void fb_draw_char_ex(int x, int y, char c, int color, int bg_color);
 void fb_draw_text(int x, int y, const char *s);
+void fb_draw_text_ex(int x, int y, const char *s, int color, int bg_color);
+void fb_draw_text_scaled(int x, int y, const char *s, int scale);
+
+void fb_draw_line(int x0, int y0, int x1, int y1, int color);
+void fb_draw_rect(int x, int y, int w, int h, int color);
+void fb_fill_rect(int x, int y, int w, int h, int color);
+
 esp_err_t sh1106_render(void);
 
 /* SH1106 control API */

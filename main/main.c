@@ -22,6 +22,7 @@
 #include "wifi_manager.h"
 #include "menu.h"
 #include "battery.h"
+#include "pedometer.h"
 
 static const char *TAG = "SmartWatch";
 
@@ -118,6 +119,7 @@ static void main_task(void *arg) {
 
     sensors_init();
     battery_init();
+    pedometer_init();
     
     // Configure GPIO 1 for tap interrupt
     gpio_config_t io_conf = {};
@@ -179,6 +181,7 @@ static void main_task(void *arg) {
             // Read sensors normally in active/idle/light-sleep modes
             sensors_read_temp_hum(&temp, &hum);
             sensors_read_accel(&ax, &ay, &az);
+            pedometer_process(ax, ay, az);
         } else {
             // In deep sleep, only read motion if motion was detected (via ISR in future)
             // For now, just skip sensor reads to conserve power

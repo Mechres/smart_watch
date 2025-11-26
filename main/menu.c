@@ -225,7 +225,6 @@ static void render_root_menu(void) {
 
 static void render_watchface_menu(void) {
     fb_clear();
-    char buf[64];
     
     fb_draw_text(0, 0, "===WATCHFACE===");
     fb_draw_line(0, 9, DISP_WIDTH, 9, 1);

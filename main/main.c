@@ -12,6 +12,7 @@
 #include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "esp_sleep.h" // Added for light sleep
 
 #include "display.h"
 #include "watchfaces.h"
@@ -144,12 +145,15 @@ static void main_task(void *arg) {
     // Initialize event-driven button input
     if (input_init() != ESP_OK) {
         ESP_LOGE(TAG, "Input module init failed - continuing without buttons");
+    } else {
+        // Configure buttons for wakeup from light sleep
+        input_enable_wakeup();
     }
 
     // Initialize time tracking (use monotonic time for timeouts to avoid SNTP jumps)
     int64_t now_mono_us = esp_timer_get_time();
     last_motion_time_s = (int32_t)(now_mono_us / 1000000);
-    int32_t last_weather_update_s = -9999; // Force update on start  // <-- ADD THIS LINE
+    int32_t last_weather_update_s = -9999; // Force update on start
 
     // main loop: adaptive polling based on power mode
     while (1) {
@@ -185,8 +189,8 @@ static void main_task(void *arg) {
             sensors_read_temp_hum(&temp, &hum);
             sensors_read_accel(&ax, &ay, &az);
             pedometer_process(ax, ay, az);
-            // Update weather every 30 minutes (1800 seconds) if WiFi is connected
-            if (wifi_is_connected() && (current_mono_s - last_weather_update_s) > 1800) {
+            // Update weather every 60 minutes (3600 seconds) if WiFi is connected
+            if (wifi_is_connected() && (current_mono_s - last_weather_update_s) > 3600) {
                 ESP_LOGI(TAG, "Fetching weather...");
                 weather_fetch_async();
                 last_weather_update_s = current_mono_s;
@@ -242,7 +246,23 @@ static void main_task(void *arg) {
         }
 
         // Sleep for adaptive interval based on power mode (saves battery)
-        vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
+        if (mode == POWER_LIGHT_SLEEP) {
+            // In light sleep, use esp_light_sleep_start instead of vTaskDelay
+            // This stops the CPU but keeps RAM and peripherals (like I2C/GPIO) active
+            esp_sleep_enable_timer_wakeup(poll_interval_ms * 1000);
+            esp_light_sleep_start();
+            
+            // Check wakeup cause
+            esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+            if (cause == ESP_SLEEP_WAKEUP_GPIO) {
+                ESP_LOGI(TAG, "Woke up from GPIO (Button)");
+                // Yield to allow debounce task to run immediately
+                taskYIELD();
+            }
+        } else {
+            // Active or Deep Sleep (waiting to enter) -> use standard delay
+            vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
+        }
     }
 }
 

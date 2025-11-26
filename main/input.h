@@ -24,4 +24,7 @@ bool input_button_up_pressed(void);
 bool input_button_down_pressed(void);
 bool input_button_ok_pressed(void);
 
+/* Enable GPIO wakeup for buttons */
+void input_enable_wakeup(void);
+
 #endif // INPUT_H

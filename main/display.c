@@ -159,11 +159,22 @@ void fb_draw_text_scaled(int x, int y, const char *s, int scale) {
     }
 }
 
+static uint8_t last_fb[DISP_WIDTH * PAGE_COUNT];
+
 esp_err_t sh1106_render(void) {
+    // Optimization: Only send if content changed to reduce LED blinking
+    if (memcmp(fb, last_fb, sizeof(fb)) == 0) {
+        return ESP_OK;
+    }
+
     for (int p = 0; p < PAGE_COUNT; ++p) {
         esp_err_t r = sh1106_write_page(p, &fb[p*DISP_WIDTH]);
         if (r != ESP_OK) return r;
     }
+    
+    // Update last_fb after successful transmission
+    memcpy(last_fb, fb, sizeof(fb));
+    
     return ESP_OK;
 }
 

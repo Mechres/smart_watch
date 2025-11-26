@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include "display.h"
 #include "watchfaces.h"
@@ -150,4 +151,68 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
     const char *days[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
     snprintf(buf, sizeof(buf), "%s", days[timeinfo->tm_wday]);
     fb_draw_text(0, 48, buf);
+}
+
+/* Terminal watchface - retro command line style */
+void render_watchface_terminal(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
+    fb_clear();
+    char buf[64];
+    
+    // Line 1: Time
+    snprintf(buf, sizeof(buf), "> TIME: %02d:%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+    fb_draw_text(0, 0, buf);
+    
+    // Line 2: Date
+    snprintf(buf, sizeof(buf), "> DATE: %04d-%02d-%02d", 1900 + timeinfo->tm_year, timeinfo->tm_mon + 1, timeinfo->tm_mday);
+    fb_draw_text(0, 12, buf);
+    
+    // Line 3: Battery
+    snprintf(buf, sizeof(buf), "> BATT: %d%% [%dmV]", batt_pct, batt_mv);
+    fb_draw_text(0, 24, buf);
+    
+    // Line 4: Env
+    snprintf(buf, sizeof(buf), "> ENV : %.1fC %.0f%%", temp, hum);
+    fb_draw_text(0, 36, buf);
+
+    // Line 5: Status with blinking cursor
+    if (timeinfo->tm_sec % 2 == 0) {
+        fb_draw_text(0, 48, "> STAT: ONLINE_");
+    } else {
+        fb_draw_text(0, 48, "> STAT: ONLINE ");
+    }
+}
+
+/* Matrix watchface - digital rain inspired */
+void render_watchface_matrix(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
+    fb_clear();
+    char buf[64];
+    
+    // Draw random characters background
+    // Draw columns of random chars
+    for (int y = 0; y < DISP_HEIGHT; y += 10) {
+        for (int x = 0; x < DISP_WIDTH; x += 12) {
+             // Simple pseudo-random pattern based on time and position to avoid static noise
+             if (((x + y + timeinfo->tm_sec) / 10) % 2 == 0) { 
+                 char c = 33 + (rand() % 90); // Random printable char
+                 char str[2] = {c, 0};
+                 fb_draw_text(x, y, str);
+             }
+        }
+    }
+    
+    // Draw box for time
+    int box_w = 80;
+    int box_h = 24;
+    int box_x = (DISP_WIDTH - box_w) / 2;
+    int box_y = (DISP_HEIGHT - box_h) / 2;
+    
+    fb_fill_rect(box_x, box_y, box_w, box_h, 0); // Clear box (black)
+    fb_draw_rect(box_x, box_y, box_w, box_h, 1); // White border
+    
+    snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min);
+    int len = strlen(buf);
+    int char_width = 6 * 2;
+    int tx = box_x + (box_w - (len * char_width)) / 2;
+    int ty = box_y + 5;
+    fb_draw_text_scaled(tx, ty, buf, 2);
 }

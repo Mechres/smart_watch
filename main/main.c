@@ -1,7 +1,6 @@
-// main.c
-
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 #include <sys/time.h>
 #include "freertos/FreeRTOS.h"
@@ -12,7 +11,7 @@
 #include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
-#include "esp_sleep.h" // Added for light sleep
+#include "esp_sleep.h"
 
 #include "display.h"
 #include "watchfaces.h"
@@ -273,6 +272,8 @@ void app_main(void) {
         nvs_flash_erase();
         nvs_flash_init();
     }
+
+    srand(time(NULL));
 
     ESP_LOGI(TAG, "Init I2C");
     if (i2c_master_init() != ESP_OK) {

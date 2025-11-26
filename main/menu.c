@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <sys/time.h>
 #include "pedometer.h"
+#include "weather.h"
 
 static const char *TAG = "Menu";
 
@@ -16,6 +17,7 @@ typedef enum {
     MENU_SETTINGS,        // Settings menu
     MENU_SENSOR_DATA,     // Detailed sensor readings
     MENU_WATCHFACE,       // Watchface selection
+    MENU_WEATHER,         // Weather display
     MENU_COUNT
 } menu_mode_t;
 
@@ -51,9 +53,10 @@ static menu_mode_t current_menu = MENU_WATCH;
 static int32_t menu_last_activity_s = 0;
 static settings_item_t current_setting = SETTINGS_MOTION_THRESHOLD;
 static sensor_item_t current_sensor = SENSOR_TEMP;
-static int root_selection = 0; // 0 = Sensors, 1 = Settings, 2 = Watchface
+static int root_selection = 0; // 0 = Sensors, 1 = Weather, 2 = Settings, 3 = Watchface
 static watchface_t current_watchface = WATCHFACE_DIGITAL;
 static int watchface_selection = 0;
+static int weather_selection = 0; // 0 = Refresh, 1 = Back
 static bool editing_mode = false;
 
 /* Local copies of settings (loaded from settings module) */
@@ -179,15 +182,45 @@ static void render_settings_menu(void) {
     draw_menu_item(36, "[Back]", current_setting == SETTINGS_BACK);
 }
 
+static void render_weather_menu(void) {
+    fb_clear();
+    char buf[64];
+    
+    fb_draw_text(0, 0, "===WEATHER===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    
+    if (weather_is_fetching()) {
+        fb_draw_text(0, 20, "Loading...");
+    } else {
+        weather_data_t w = weather_get_current();
+        if (w.valid) {
+            snprintf(buf, sizeof(buf), "Temp: %.1f C", w.temp_c);
+            fb_draw_text(0, 15, buf);
+            
+            const char *desc = weather_get_desc(w.weather_code);
+            snprintf(buf, sizeof(buf), "%s", desc);
+            fb_draw_text(0, 27, buf);
+        } else {
+            fb_draw_text(0, 15, "No Data");
+            fb_draw_text(0, 27, "Connect WiFi");
+        }
+    }
+    
+    // Draw actions
+    draw_menu_item(42, "Refresh", weather_selection == 0);
+    draw_menu_item(53, "[Back]", weather_selection == 1);
+}
+
 static void render_root_menu(void) {
     fb_clear();
     fb_draw_text(0, 0, "===MENU===");
     fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
 
     draw_menu_item(12, "Sensors", root_selection == 0);
-    draw_menu_item(24, "Settings", root_selection == 1);
-    draw_menu_item(36, "Watchface", root_selection == 2);
-    draw_menu_item(48, "[Back]", root_selection == 3);
+    draw_menu_item(24, "Weather", root_selection == 1);
+    draw_menu_item(36, "Settings", root_selection == 2);
+    draw_menu_item(48, "Watchface", root_selection == 3);
+    draw_menu_item(60, "[Back]", root_selection == 4);
 }
 
 static void render_watchface_menu(void) {
@@ -257,6 +290,9 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
         case MENU_SENSOR_DATA:
             render_sensor_menu_list(temp, hum, ax, ay, az, batt_mv, batt_pct);
             break;
+        case MENU_WEATHER:
+            render_weather_menu();
+            break;
         case MENU_SETTINGS:
             render_settings_menu();
             break;
@@ -278,6 +314,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (root_selection > 0) root_selection--;
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection > 0) watchface_selection--;
+        } else if (current_menu == MENU_WEATHER) {
+            if (weather_selection > 0) weather_selection--;
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable += 10;
@@ -295,9 +333,11 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            if (root_selection < 3) root_selection++;
+            if (root_selection < 4) root_selection++;
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection < WATCHFACE_COUNT) watchface_selection++;
+        } else if (current_menu == MENU_WEATHER) {
+            if (weather_selection < 1) weather_selection++;
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable -= 10;
@@ -319,12 +359,23 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             root_selection = 0;
         } else if (current_menu == MENU_ROOT) {
             if (root_selection == 0) current_menu = MENU_SENSOR_DATA;
-            else if (root_selection == 1) current_menu = MENU_SETTINGS;
-            else if (root_selection == 2) {
+            else if (root_selection == 1) {
+                current_menu = MENU_WEATHER;
+                weather_selection = 0; // Reset to Refresh
+            }
+            else if (root_selection == 2) current_menu = MENU_SETTINGS;
+            else if (root_selection == 3) {
                 current_menu = MENU_WATCHFACE;
                 watchface_selection = current_watchface;
-            } else if (root_selection == 3) {
+            } else if (root_selection == 4) {
                 current_menu = MENU_WATCH; // Back to watch
+            }
+        } else if (current_menu == MENU_WEATHER) {
+            if (weather_selection == 0) {
+                ESP_LOGI(TAG, "Manual weather refresh requested");
+                weather_fetch_async();
+            } else {
+                current_menu = MENU_ROOT; // Back
             }
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection == WATCHFACE_COUNT) {

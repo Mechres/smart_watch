@@ -10,7 +10,7 @@
 
 /* Button GPIO pins */
 #define BUTTON_UP_GPIO   3
-#define BUTTON_DOWN_GPIO 4
+#define BUTTON_DOWN_GPIO 2
 #define BUTTON_OK_GPIO   5
 
 /* Debounce time (ms) */

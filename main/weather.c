@@ -38,8 +38,16 @@ static esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 /* -------------------------------------------------------------------------- */
 /* Fetch the current weather from Open‑Meteo                                    */
 /* -------------------------------------------------------------------------- */
+static bool is_fetching = false;
+
+/* -------------------------------------------------------------------------- */
+/* Fetch the current weather from Open‑Meteo                                    */
+/* -------------------------------------------------------------------------- */
 esp_err_t weather_fetch(void)
 {
+    if (is_fetching) return ESP_ERR_INVALID_STATE; // Already fetching
+    is_fetching = true;
+
     char response[1024] = {0};   // buffer large enough for the JSON payload
     resp_offset = 0;             // ensure offset starts at zero
 
@@ -55,6 +63,7 @@ esp_err_t weather_fetch(void)
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         ESP_LOGE(TAG, "Failed to initialise HTTP client");
+        is_fetching = false;
         return ESP_FAIL;
     }
 
@@ -87,7 +96,23 @@ esp_err_t weather_fetch(void)
     }
 
     esp_http_client_cleanup(client);
+    is_fetching = false;
     return err;
+}
+
+static void weather_fetch_task(void *arg) {
+    weather_fetch();
+    vTaskDelete(NULL);
+}
+
+void weather_fetch_async(void) {
+    if (!is_fetching) {
+        xTaskCreate(weather_fetch_task, "weather_fetch", 4096, NULL, 5, NULL);
+    }
+}
+
+bool weather_is_fetching(void) {
+    return is_fetching;
 }
 
 /* -------------------------------------------------------------------------- */

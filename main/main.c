@@ -188,12 +188,8 @@ static void main_task(void *arg) {
             // Update weather every 30 minutes (1800 seconds) if WiFi is connected
             if (wifi_is_connected() && (current_mono_s - last_weather_update_s) > 1800) {
                 ESP_LOGI(TAG, "Fetching weather...");
-                if (weather_fetch() == ESP_OK) {
-                    last_weather_update_s = current_mono_s;
-                } else {
-                    // Retry sooner if failed (e.g. 1 min)
-                    last_weather_update_s = current_mono_s - 1800 + 60;
-                }
+                weather_fetch_async();
+                last_weather_update_s = current_mono_s;
             }
         } else {
             // In deep sleep, only read motion if motion was detected (via ISR in future)

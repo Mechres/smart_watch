@@ -13,6 +13,8 @@ typedef struct {
 
 void weather_init(void);
 esp_err_t weather_fetch(void);
+void weather_fetch_async(void);
+bool weather_is_fetching(void);
 weather_data_t weather_get_current(void);
 const char* weather_get_desc(int code);
 

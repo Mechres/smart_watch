@@ -10,8 +10,8 @@
 #include "esp_sleep.h"
 
 /* Button GPIO pins */
-#define BUTTON_UP_GPIO   6
-#define BUTTON_DOWN_GPIO 7
+#define BUTTON_UP_GPIO   7
+#define BUTTON_DOWN_GPIO 6
 #define BUTTON_OK_GPIO   5
 
 /* Debounce time (ms) */
@@ -103,10 +103,15 @@ bool input_button_ok_pressed(void) {
 }
 
 void input_enable_wakeup(void) {
-    // Enable wakeup on low level for button pins
-    // Note: ESP32-C3 supports GPIO wakeup on any RTC GPIO
+    // Enable wakeup on low level for button pins (Light Sleep)
     gpio_wakeup_enable(BUTTON_UP_GPIO, GPIO_INTR_LOW_LEVEL);
     gpio_wakeup_enable(BUTTON_DOWN_GPIO, GPIO_INTR_LOW_LEVEL);
     gpio_wakeup_enable(BUTTON_OK_GPIO, GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
+}
+
+void input_enable_deep_sleep_wakeup(void) {
+    // Enable wakeup on low level for button pins (Deep Sleep)
+    uint64_t mask = (1ULL << BUTTON_OK_GPIO);
+    esp_deep_sleep_enable_gpio_wakeup(mask, ESP_GPIO_WAKEUP_GPIO_LOW);
 }

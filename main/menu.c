@@ -8,6 +8,11 @@
 #include "pedometer.h"
 #include "weather.h"
 #include "esp_timer.h"
+#include "esp_system.h"
+#include "esp_sleep.h"
+#include "input.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "Menu";
 
@@ -37,6 +42,8 @@ typedef enum {
     SETTINGS_MOTION_THRESHOLD = 0,
     SETTINGS_SCREEN_TIMEOUT,
     SETTINGS_BRIGHTNESS,
+    SETTINGS_REBOOT,
+    SETTINGS_POWER_OFF,
     SETTINGS_BACK,
     SETTINGS_COUNT
 } settings_item_t;
@@ -203,8 +210,14 @@ static void render_settings_menu(void) {
         draw_menu_item(36, buf, current_setting == SETTINGS_BRIGHTNESS);
     }
 
+    // Reboot
+    draw_menu_item(48, "Reboot", current_setting == SETTINGS_REBOOT);
+
+    // Power Off
+    draw_menu_item(60, "Power Off", current_setting == SETTINGS_POWER_OFF);
+
     // Back
-    draw_menu_item(48, "[Back]", current_setting == SETTINGS_BACK);
+    draw_menu_item(72, "[Back]", current_setting == SETTINGS_BACK);
 }
 
 static void render_weather_menu(void) {
@@ -510,6 +523,18 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         } else if (current_menu == MENU_SETTINGS && !editing_mode) {
             if (current_setting == SETTINGS_BACK) {
                 current_menu = MENU_ROOT; // Back
+            } else if (current_setting == SETTINGS_REBOOT) {
+                ESP_LOGI(TAG, "Reboot requested");
+                esp_restart();
+            } else if (current_setting == SETTINGS_POWER_OFF) {
+                ESP_LOGI(TAG, "Power Off requested");
+                fb_clear();
+                fb_draw_text(10, 30, "Powering Off...");
+                sh1106_render();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                sh1106_display_off();
+                input_enable_deep_sleep_wakeup();
+                esp_deep_sleep_start();
             } else {
                 editing_mode = true;
             }

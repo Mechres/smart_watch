@@ -100,8 +100,22 @@ esp_err_t weather_fetch(void)
     return err;
 }
 
+#include "wifi_manager.h"
+
 static void weather_fetch_task(void *arg) {
-    weather_fetch();
+    ESP_LOGI(TAG, "Weather task: Starting WiFi...");
+    wifi_start();
+    
+    if (wifi_ensure_connection(10000)) { // Wait up to 10s
+        ESP_LOGI(TAG, "WiFi connected, fetching weather...");
+        weather_fetch();
+    } else {
+        ESP_LOGE(TAG, "WiFi connection timed out");
+    }
+    
+    ESP_LOGI(TAG, "Weather task: Stopping WiFi...");
+    wifi_stop();
+    
     vTaskDelete(NULL);
 }
 

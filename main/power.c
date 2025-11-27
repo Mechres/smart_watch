@@ -31,14 +31,12 @@ void power_update_mode(uint32_t inactivity_secs) {
     if (new_mode != current_mode) {
         ESP_LOGI(TAG, "Transitioning from mode %d to %d (inactivity=%u s)", current_mode, new_mode, inactivity_secs);
         
-        // Handle WiFi power
-        if (new_mode == POWER_ACTIVE && current_mode != POWER_ACTIVE) {
-            // Waking up -> Start WiFi
-            wifi_start();
-        } else if (new_mode != POWER_ACTIVE && current_mode == POWER_ACTIVE) {
-            // Going to sleep (Light or Deep) -> Stop WiFi
-            wifi_stop();
-        }
+        // WiFi power is now handled on-demand by weather task
+        // if (new_mode == POWER_ACTIVE && current_mode != POWER_ACTIVE) {
+        //     wifi_start();
+        // } else if (new_mode != POWER_ACTIVE && current_mode == POWER_ACTIVE) {
+        //     wifi_stop();
+        // }
 
         current_mode = new_mode;
         

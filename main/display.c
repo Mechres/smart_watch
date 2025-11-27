@@ -17,7 +17,7 @@ static esp_err_t sh1106_write_page(uint8_t page, const uint8_t *data128);
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_SDA_IO           8
 #define I2C_MASTER_SCL_IO           9
-#define I2C_MASTER_FREQ_HZ          100000
+#define I2C_MASTER_FREQ_HZ          400000
 #define I2C_MASTER_TX_BUF_DISABLE   0
 #define I2C_MASTER_RX_BUF_DISABLE   0
 #define I2C_TIMEOUT_MS              1000
@@ -25,6 +25,7 @@ static esp_err_t sh1106_write_page(uint8_t page, const uint8_t *data128);
 #define SH1106_ADDR                 0x3C
 
 static uint8_t fb[DISP_WIDTH * PAGE_COUNT];
+static uint8_t last_fb[DISP_WIDTH * PAGE_COUNT]; // For dirty check
 
 void fb_clear(void) { memset(fb, 0x00, sizeof(fb)); }
 
@@ -145,10 +146,18 @@ void fb_draw_text_scaled(int x, int y, const char *s, int scale) {
 }
 
 esp_err_t sh1106_render(void) {
+    // Dirty check: if fb hasn't changed, don't send anything
+    if (memcmp(fb, last_fb, sizeof(fb)) == 0) {
+        return ESP_OK;
+    }
+
     for (int p = 0; p < PAGE_COUNT; ++p) {
         esp_err_t r = sh1106_write_page(p, &fb[p*DISP_WIDTH]);
         if (r != ESP_OK) return r;
     }
+    
+    // Update last_fb
+    memcpy(last_fb, fb, sizeof(fb));
     
     return ESP_OK;
 }
@@ -189,6 +198,7 @@ esp_err_t sh1106_init(void) {
     esp_err_t err = sh1106_write_cmd(init_seq, sizeof(init_seq));
     if (err != ESP_OK) return err;
     fb_clear();
+    memset(last_fb, 0xFF, sizeof(last_fb)); // Force update on first render
     if (sh1106_render() != ESP_OK) {
         vTaskDelay(pdMS_TO_TICKS(50));
         if (sh1106_render() != ESP_OK) return ESP_FAIL;

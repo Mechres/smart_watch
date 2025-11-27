@@ -31,7 +31,7 @@ static const char *TAG = "SmartWatch";
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_SDA_IO           8   // ESP32-C3 SuperMini SDA
 #define I2C_MASTER_SCL_IO           9   // ESP32-C3 SuperMini SCL
-#define I2C_MASTER_FREQ_HZ          100000
+#define I2C_MASTER_FREQ_HZ          400000
 #define I2C_MASTER_TX_BUF_DISABLE   0
 #define I2C_MASTER_RX_BUF_DISABLE   0
 #define I2C_TIMEOUT_MS              1000
@@ -187,8 +187,8 @@ static void main_task(void *arg) {
             sensors_read_temp_hum(&temp, &hum);
             sensors_read_accel(&ax, &ay, &az);
             pedometer_process(ax, ay, az);
-            // Update weather every 60 minutes (3600 seconds) if WiFi is connected
-            if (wifi_is_connected() && (current_mono_s - last_weather_update_s) > 3600) {
+            // Update weather every 60 minutes (3600 seconds) - WiFi is handled by fetch task
+            if ((current_mono_s - last_weather_update_s) > 3600) {
                 ESP_LOGI(TAG, "Fetching weather...");
                 weather_fetch_async();
                 last_weather_update_s = current_mono_s;
@@ -298,6 +298,7 @@ void app_main(void) {
     // WiFi init
     ESP_LOGI(TAG, "Init WiFi");
     wifi_init_sta();
+    wifi_stop(); // Ensure WiFi is off by default to save power
 
     // create main task
     xTaskCreate(main_task, "main_task", 8192, NULL, 5, NULL);

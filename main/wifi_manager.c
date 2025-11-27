@@ -95,3 +95,13 @@ bool wifi_is_connected(void) {
     EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
+
+bool wifi_ensure_connection(int timeout_ms) {
+    if (s_wifi_event_group == NULL) return false;
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+            WIFI_CONNECTED_BIT,
+            pdFALSE,
+            pdTRUE,
+            pdMS_TO_TICKS(timeout_ms));
+    return (bits & WIFI_CONNECTED_BIT) != 0;
+}

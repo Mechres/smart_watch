@@ -156,12 +156,11 @@ static void main_task(void *arg) {
 
     // main loop: adaptive polling based on power mode
     while (1) {
-        // get current time (UTC+3)
+        // get current time
         time_t now;
         time(&now);
-        now += 3*3600; // apply UTC+3 offset
         struct tm timeinfo;
-        gmtime_r(&now, &timeinfo);
+        localtime_r(&now, &timeinfo);
 
         // Use monotonic time for timeouts
         int64_t current_mono_us = esp_timer_get_time();
@@ -274,6 +273,10 @@ void app_main(void) {
     }
 
     srand(time(NULL));
+
+    // Set timezone to UTC+3 (Istanbul)
+    setenv("TZ", "TRT-3", 1);
+    tzset();
 
     ESP_LOGI(TAG, "Init I2C");
     if (i2c_master_init() != ESP_OK) {

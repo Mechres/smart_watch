@@ -7,6 +7,7 @@
 #include <sys/time.h>
 #include "pedometer.h"
 #include "weather.h"
+#include "esp_timer.h"
 
 static const char *TAG = "Menu";
 
@@ -18,6 +19,7 @@ typedef enum {
     MENU_SENSOR_DATA,     // Detailed sensor readings
     MENU_WATCHFACE,       // Watchface selection
     MENU_WEATHER,         // Weather display
+    MENU_STOPWATCH,       // Stopwatch feature
     MENU_COUNT
 } menu_mode_t;
 
@@ -60,6 +62,11 @@ static watchface_t current_watchface = WATCHFACE_DIGITAL;
 static int watchface_selection = 0;
 static int weather_selection = 0; // 0 = Refresh, 1 = Back
 static bool editing_mode = false;
+
+/* Stopwatch state */
+static bool stopwatch_running = false;
+static int64_t stopwatch_start_time = 0;
+static int64_t stopwatch_elapsed_time = 0;
 
 /* Local copies of settings (loaded from settings module) */
 static int16_t motion_threshold_editable = 100;
@@ -107,12 +114,13 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
     fb_draw_text(0, 0, "===SENSORS===");
     fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
     
-    int start_idx = current_sensor - 1;
+    int start_idx = current_sensor - 2;
     if (start_idx < 0) start_idx = 0;
-    if (start_idx > SENSOR_COUNT - 3) start_idx = SENSOR_COUNT - 3;
+    if (start_idx > SENSOR_COUNT - 5) start_idx = SENSOR_COUNT - 5;
+    if (start_idx < 0) start_idx = 0;
     
     int y_pos = 12;
-    for (int i = start_idx; i < start_idx + 3 && i < SENSOR_COUNT; i++) {
+    for (int i = start_idx; i < start_idx + 5 && i < SENSOR_COUNT; i++) {
         bool is_selected = (i == current_sensor);
         
         switch (i) {
@@ -143,12 +151,12 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
         }
         
         draw_menu_item(y_pos, buf, is_selected);
-        y_pos += 11;
+        y_pos += 10;
     }
     
     // Scroll indicators
     if (start_idx > 0) fb_draw_text(120, 12, "^");
-    if (start_idx + 3 < SENSOR_COUNT) fb_draw_text(120, 34, "v");
+    if (start_idx + 5 < SENSOR_COUNT) fb_draw_text(120, 54, "v");
 }
 
 static void render_settings_menu(void) {
@@ -213,16 +221,74 @@ static void render_weather_menu(void) {
     draw_menu_item(53, "[Back]", weather_selection == 1);
 }
 
+static void render_stopwatch_menu(void) {
+    fb_clear();
+    char buf[64];
+
+    fb_draw_text(0, 0, "===STOPWATCH===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+
+    // Calculate current elapsed time
+    int64_t current_elapsed = stopwatch_elapsed_time;
+    if (stopwatch_running) {
+        int64_t now = esp_timer_get_time();
+        current_elapsed += (now - stopwatch_start_time);
+    }
+
+    // Format time: MM:SS.ms
+    int total_ms = current_elapsed / 1000;
+    int ms = (total_ms % 1000) / 100; // 1/10th of a second
+    int total_seconds = total_ms / 1000;
+    int seconds = total_seconds % 60;
+    int minutes = total_seconds / 60;
+
+    snprintf(buf, sizeof(buf), "%02d:%02d.%d", minutes, seconds, ms);
+    
+    // Large centered text
+    int len = strlen(buf);
+    int char_width = 6 * 2;
+    int x = (DISP_WIDTH - (len * char_width)) / 2;
+    fb_draw_text_scaled(x, 25, buf, 2);
+
+    // Instructions
+    if (stopwatch_running) {
+        fb_draw_text(10, 50, "[OK] Stop");
+    } else {
+        fb_draw_text(10, 50, "[OK] Start");
+        fb_draw_text(70, 50, "[v] Reset");
+    }
+}
+
 static void render_root_menu(void) {
     fb_clear();
     fb_draw_text(0, 0, "===MENU===");
     fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
 
-    draw_menu_item(12, "Sensors", root_selection == 0);
-    draw_menu_item(24, "Weather", root_selection == 1);
-    draw_menu_item(36, "Settings", root_selection == 2);
-    draw_menu_item(48, "Watchface", root_selection == 3);
-    draw_menu_item(60, "[Back]", root_selection == 4);
+    const char *items[] = {
+        "Sensors",
+        "Weather",
+        "Settings",
+        "Watchface",
+        "Stopwatch",
+        "[Back]"
+    };
+    int item_count = 6;
+
+    int start_idx = root_selection - 2;
+    if (start_idx < 0) start_idx = 0;
+    if (start_idx > item_count - 5) start_idx = item_count - 5;
+    if (start_idx < 0) start_idx = 0; // Safety if count < 5
+
+    int y_pos = 12;
+    for (int i = start_idx; i < start_idx + 5 && i < item_count; i++) {
+        bool is_selected = (i == root_selection);
+        draw_menu_item(y_pos, items[i], is_selected);
+        y_pos += 10;
+    }
+
+    // Scroll indicators
+    if (start_idx > 0) fb_draw_text(120, 12, "^");
+    if (start_idx + 5 < item_count) fb_draw_text(120, 54, "v");
 }
 
 static void render_watchface_menu(void) {
@@ -240,26 +306,27 @@ static void render_watchface_menu(void) {
         "Matrix"
     };
     
-    int start_idx = watchface_selection - 1;
+    int start_idx = watchface_selection - 2;
     if (start_idx < 0) start_idx = 0;
-    if (start_idx > WATCHFACE_COUNT - 3) start_idx = WATCHFACE_COUNT - 3;
+    if (start_idx > WATCHFACE_COUNT - 5) start_idx = WATCHFACE_COUNT - 5;
+    if (start_idx < 0) start_idx = 0;
     
     int y_pos = 12;
-    for (int i = start_idx; i < start_idx + 3 && i < WATCHFACE_COUNT; i++) {
+    for (int i = start_idx; i < start_idx + 5 && i < WATCHFACE_COUNT; i++) {
         bool is_selected = (i == watchface_selection);
         draw_menu_item(y_pos, names[i], is_selected);
-        y_pos += 11;
+        y_pos += 10;
     }
     
     // Show Back option at the end if scrolled there
     if (watchface_selection == WATCHFACE_COUNT) {
          draw_menu_item(y_pos, "[Back]", true);
-    } else if (start_idx + 3 >= WATCHFACE_COUNT) {
+    } else if (start_idx + 5 >= WATCHFACE_COUNT) {
          draw_menu_item(y_pos, "[Back]", false);
     }
     
     if (start_idx > 0) fb_draw_text(120, 12, "^");
-    if (start_idx + 3 < WATCHFACE_COUNT) fb_draw_text(120, 34, "v");
+    if (start_idx + 5 < WATCHFACE_COUNT) fb_draw_text(120, 54, "v");
 }
 
 static void render_watch_display(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
@@ -302,6 +369,9 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
         case MENU_WEATHER:
             render_weather_menu();
             break;
+        case MENU_STOPWATCH:
+            render_stopwatch_menu();
+            break;
         case MENU_SETTINGS:
             render_settings_menu();
             break;
@@ -342,11 +412,15 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            if (root_selection < 4) root_selection++;
+            if (root_selection < 5) root_selection++;
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection < WATCHFACE_COUNT) watchface_selection++;
         } else if (current_menu == MENU_WEATHER) {
             if (weather_selection < 1) weather_selection++;
+        } else if (current_menu == MENU_STOPWATCH) {
+            if (!stopwatch_running) {
+                stopwatch_elapsed_time = 0; // Reset
+            }
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable -= 10;
@@ -377,7 +451,20 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 current_menu = MENU_WATCHFACE;
                 watchface_selection = current_watchface;
             } else if (root_selection == 4) {
+                current_menu = MENU_STOPWATCH;
+            } else if (root_selection == 5) {
                 current_menu = MENU_WATCH; // Back to watch
+            }
+        } else if (current_menu == MENU_STOPWATCH) {
+            if (stopwatch_running) {
+                // Stop
+                int64_t now = esp_timer_get_time();
+                stopwatch_elapsed_time += (now - stopwatch_start_time);
+                stopwatch_running = false;
+            } else {
+                // Start
+                stopwatch_start_time = esp_timer_get_time();
+                stopwatch_running = true;
             }
         } else if (current_menu == MENU_WEATHER) {
             if (weather_selection == 0) {

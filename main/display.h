@@ -1,4 +1,3 @@
-// display.h - framebuffer and SH1106 render helpers
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
@@ -27,5 +26,8 @@ esp_err_t sh1106_render(void);
 esp_err_t sh1106_init(void);
 esp_err_t sh1106_display_on(void);
 esp_err_t sh1106_display_off(void);
+
+/* Set display contrast (brightness) 0-255 */
+esp_err_t sh1106_set_contrast(uint8_t contrast);
 
 #endif // DISPLAY_H

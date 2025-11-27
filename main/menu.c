@@ -36,6 +36,7 @@ typedef enum {
 typedef enum {
     SETTINGS_MOTION_THRESHOLD = 0,
     SETTINGS_SCREEN_TIMEOUT,
+    SETTINGS_BRIGHTNESS,
     SETTINGS_BACK,
     SETTINGS_COUNT
 } settings_item_t;
@@ -71,10 +72,13 @@ static int64_t stopwatch_elapsed_time = 0;
 /* Local copies of settings (loaded from settings module) */
 static int16_t motion_threshold_editable = 100;
 static int16_t screen_timeout_editable = 5;
+static int16_t brightness_editable = 128;
 
 void menu_init(void) {
     // Load initial settings
-    settings_load(&motion_threshold_editable, &screen_timeout_editable, (int*)&current_watchface);
+    settings_load(&motion_threshold_editable, &screen_timeout_editable, (int*)&current_watchface, &brightness_editable);
+    // Apply loaded brightness
+    sh1106_set_contrast((uint8_t)brightness_editable);
 }
 
 int16_t menu_get_motion_threshold(void) {
@@ -188,8 +192,19 @@ static void render_settings_menu(void) {
         draw_menu_item(24, buf, current_setting == SETTINGS_SCREEN_TIMEOUT);
     }
 
+    // Brightness
+    if (current_setting == SETTINGS_BRIGHTNESS && editing_mode) {
+        snprintf(buf, sizeof(buf), "Bright: [%d]", brightness_editable);
+        fb_fill_rect(0, 36, DISP_WIDTH, 10, 1);
+        fb_draw_text_ex(2, 37, buf, 0, -1);
+        fb_draw_text(100, 37, "<>");
+    } else {
+        snprintf(buf, sizeof(buf), "Bright: %d", brightness_editable);
+        draw_menu_item(36, buf, current_setting == SETTINGS_BRIGHTNESS);
+    }
+
     // Back
-    draw_menu_item(36, "[Back]", current_setting == SETTINGS_BACK);
+    draw_menu_item(48, "[Back]", current_setting == SETTINGS_BACK);
 }
 
 static void render_weather_menu(void) {
@@ -399,11 +414,16 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable += 10;
                 if (motion_threshold_editable > 500) motion_threshold_editable = 500;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             } else if (current_setting == SETTINGS_SCREEN_TIMEOUT) {
                 screen_timeout_editable += 1;
                 if (screen_timeout_editable > 60) screen_timeout_editable = 60;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+            } else if (current_setting == SETTINGS_BRIGHTNESS) {
+                brightness_editable += 10;
+                if (brightness_editable > 255) brightness_editable = 255;
+                sh1106_set_contrast((uint8_t)brightness_editable);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             }
         } else if (current_menu == MENU_SETTINGS) {
             if (current_setting > 0) current_setting--;
@@ -425,11 +445,16 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable -= 10;
                 if (motion_threshold_editable < 10) motion_threshold_editable = 10;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             } else if (current_setting == SETTINGS_SCREEN_TIMEOUT) {
                 screen_timeout_editable -= 1;
                 if (screen_timeout_editable < 1) screen_timeout_editable = 1;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+            } else if (current_setting == SETTINGS_BRIGHTNESS) {
+                brightness_editable -= 10;
+                if (brightness_editable < 0) brightness_editable = 0;
+                sh1106_set_contrast((uint8_t)brightness_editable);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             }
         } else if (current_menu == MENU_SETTINGS) {
             if (current_setting < SETTINGS_COUNT - 1) current_setting++;
@@ -478,7 +503,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 current_menu = MENU_ROOT; // Back
             } else {
                 current_watchface = watchface_selection;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
                 current_menu = MENU_WATCH;
                 editing_mode = false;
             }
@@ -490,7 +515,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             }
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             editing_mode = false;
-            settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface);
+            settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
         } else if (current_menu == MENU_SENSOR_DATA) {
             if (current_sensor == SENSOR_BACK) {
                 current_menu = MENU_ROOT;

@@ -205,3 +205,8 @@ esp_err_t sh1106_display_off(void) {
     const uint8_t cmd[] = {0xAE};
     return sh1106_write_cmd(cmd, sizeof(cmd));
 }
+
+esp_err_t sh1106_set_contrast(uint8_t contrast) {
+    const uint8_t cmd[] = {0x81, contrast};
+    return sh1106_write_cmd(cmd, sizeof(cmd));
+}

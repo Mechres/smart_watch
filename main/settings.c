@@ -21,7 +21,7 @@ esp_err_t settings_init(void) {
     return ESP_OK;
 }
 
-esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int *watchface) {
+esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int *watchface, int16_t *brightness) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
@@ -30,6 +30,7 @@ esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int 
             *motion_threshold = 100;
             *screen_timeout = 5;
             *watchface = 0; // WATCHFACE_DIGITAL
+            *brightness = 128; // Default brightness
             return ESP_OK;
         }
         ESP_LOGE(TAG, "Error opening NVS: %s", esp_err_to_name(err));
@@ -61,13 +62,21 @@ esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int 
         *watchface = 0;
     }
 
+    err = nvs_get_i16(handle, "brightness", brightness);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Error reading brightness: %s", esp_err_to_name(err));
+        *brightness = 128;
+    } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+        *brightness = 128;
+    }
+
     nvs_close(handle);
-    ESP_LOGI(TAG, "Loaded settings: motion_thr=%d, screen_to=%d, watchface=%d", 
-             *motion_threshold, *screen_timeout, *watchface);
+    ESP_LOGI(TAG, "Loaded settings: motion_thr=%d, screen_to=%d, watchface=%d, brightness=%d", 
+             *motion_threshold, *screen_timeout, *watchface, *brightness);
     return ESP_OK;
 }
 
-esp_err_t settings_save(int16_t motion_threshold, int16_t screen_timeout, int watchface) {
+esp_err_t settings_save(int16_t motion_threshold, int16_t screen_timeout, int watchface, int16_t brightness) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
@@ -96,6 +105,13 @@ esp_err_t settings_save(int16_t motion_threshold, int16_t screen_timeout, int wa
         return err;
     }
 
+    err = nvs_set_i16(handle, "brightness", brightness);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error saving brightness: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
     err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Error committing NVS: %s", esp_err_to_name(err));
@@ -104,7 +120,7 @@ esp_err_t settings_save(int16_t motion_threshold, int16_t screen_timeout, int wa
     }
 
     nvs_close(handle);
-    ESP_LOGI(TAG, "Saved settings: motion_thr=%d, screen_to=%d, watchface=%d", 
-             motion_threshold, screen_timeout, watchface);
+    ESP_LOGI(TAG, "Saved settings: motion_thr=%d, screen_to=%d, watchface=%d, brightness=%d", 
+             motion_threshold, screen_timeout, watchface, brightness);
     return ESP_OK;
 }

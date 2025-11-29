@@ -6,6 +6,7 @@
 #include "watchfaces.h"
 #include "pedometer.h"
 #include "weather.h"
+#include "esp_timer.h"
 
 
 
@@ -215,4 +216,69 @@ void render_watchface_matrix(float temp, float hum, int16_t ax, int16_t ay, int1
     int tx = box_x + (box_w - (len * char_width)) / 2;
     int ty = box_y + 5;
     fb_draw_text_scaled(tx, ty, buf, 2);
+}
+
+/* Cat Bitmaps 16x16 (Improved) */
+// Frame 1
+static const uint8_t cat_f1[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00, 0x3C, 0x00, 0x3C, 0x10, 0x3C,
+    0x18, 0x7C, 0x1F, 0xFC, 0x0F, 0xF8, 0x07, 0xF0, 0x04, 0x10, 0x04, 0x10, 0x00, 0x00, 0x00, 0x00
+};
+// Frame 2
+static const uint8_t cat_f2[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00, 0x3C, 0x00, 0x3C, 0x10, 0x3C,
+    0x18, 0x7C, 0x1F, 0xFC, 0x0F, 0xF8, 0x07, 0xF0, 0x02, 0x08, 0x02, 0x08, 0x00, 0x00, 0x00, 0x00
+};
+
+static void draw_bitmap_16x16(int x, int y, const uint8_t *bitmap) {
+    for (int r = 0; r < 16; r++) {
+        uint16_t row_data = (bitmap[r*2] << 8) | bitmap[r*2+1];
+        for (int c = 0; c < 16; c++) {
+            if (row_data & (1 << (15-c))) {
+                fb_set_pixel(x + c, y + r, 1);
+            }
+        }
+    }
+}
+
+/* Cat watchface - animated cat */
+void render_watchface_cats(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
+    fb_clear();
+    char buf[64];
+    
+    // Time top center
+    snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min);
+    int len = strlen(buf);
+    int char_width = 6 * 2;
+    int tx = (DISP_WIDTH - (len * char_width)) / 2;
+    fb_draw_text_scaled(tx, 5, buf, 2);
+    
+    // Date bottom center
+    snprintf(buf, sizeof(buf), "%02d-%02d-%04d", timeinfo->tm_mday, timeinfo->tm_mon + 1, 1900 + timeinfo->tm_year);
+    len = strlen(buf);
+    int dx = (DISP_WIDTH - (len * 6)) / 2;
+    fb_draw_text(dx, 50, buf);
+    
+    // Animated Cat
+    // Move across screen every 5 seconds
+    int64_t now = esp_timer_get_time() / 1000; // ms
+    int cycle_ms = 5000;
+    int pos_ms = now % cycle_ms;
+    
+    // X position: -16 to 128
+    int cat_x = ((pos_ms * (DISP_WIDTH + 32)) / cycle_ms) - 16;
+    int cat_y = 28;
+    
+    // Animation frame: switch every 200ms
+    int frame = (now / 200) % 2;
+    
+    if (frame == 0) {
+        draw_bitmap_16x16(cat_x, cat_y, cat_f1);
+    } else {
+        draw_bitmap_16x16(cat_x, cat_y, cat_f2);
+    }
+    
+    // Battery
+    snprintf(buf, sizeof(buf), "%d%%", batt_pct);
+    fb_draw_text(100, 0, buf);
 }

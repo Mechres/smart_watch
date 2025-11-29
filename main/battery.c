@@ -13,8 +13,9 @@ static const char *TAG = "Battery";
 #define BATTERY_ADC_UNIT    ADC_UNIT_1
 #define BATTERY_ATTEN       ADC_ATTEN_DB_12
 
-// Voltage divider: 100k/100k = ratio of 2.0
-#define VOLTAGE_DIVIDER_RATIO 2.0f
+// Calibrated ratio based on user report: 3.89V actual / 3.20V read (with 1.66 ratio)
+// New ratio = 1.66 * (3.89 / 3.20) = ~2.0179
+#define VOLTAGE_DIVIDER_RATIO 2.02f
 
 // ESP32-C3 with 12dB attenuation: ~0-2500mV measurable range
 #define ADC_MAX_VOLTAGE_MV 2500
@@ -25,6 +26,25 @@ static const char *TAG = "Battery";
 
 static adc_oneshot_unit_handle_t adc1_handle;
 static adc_cali_handle_t adc1_cali_handle = NULL;
+
+// LiPo discharge curve lookup table (Voltage -> Percentage)
+typedef struct {
+    int16_t voltage;
+    uint8_t percentage;
+} battery_curve_t;
+
+static const battery_curve_t lipo_curve[] = {
+    {4200, 100},
+    {4100, 90},
+    {4000, 80},
+    {3900, 70},
+    {3800, 60},
+    {3700, 50},
+    {3600, 30},
+    {3500, 15},
+    {3400, 5},
+    {3300, 0}
+};
 
 void battery_init(void) {
     // Configure GPIO4 as input with no pull resistors BEFORE ADC init
@@ -62,7 +82,7 @@ void battery_init(void) {
         adc1_cali_handle = NULL;
     }
     
-    ESP_LOGI(TAG, "Battery ADC initialized on GPIO4 (100k/100k divider, ratio=2.0)");
+    ESP_LOGI(TAG, "Battery ADC initialized on GPIO4 (Ratio=1.66)");
 }
 
 int battery_get_voltage_mv(void) {
@@ -79,18 +99,8 @@ int battery_get_voltage_mv(void) {
         }
         
         // Apply voltage divider ratio to get actual battery voltage
-        // With 100k/100k resistors, the ratio is exactly 2.0
-        // 4.2V Battery -> 2.1V at GPIO4 (within 2.5V limit)
         int battery_voltage_mv = (int)(gpio_voltage_mv * VOLTAGE_DIVIDER_RATIO);
         
-        // Saturation check
-        if (adc_raw >= 4090) {  // Leave small margin
-            ESP_LOGW(TAG, "ADC near saturation! Raw: %d, GPIO4: %d mV", adc_raw, gpio_voltage_mv);
-            ESP_LOGW(TAG, "Maximum measurable battery voltage: ~5000mV with current divider");
-        }
-        
-        // ESP_LOGI(TAG, "ADC raw: %d, GPIO4: %d mV, Battery: %d mV", 
-        //          adc_raw, gpio_voltage_mv, battery_voltage_mv);
         return battery_voltage_mv;
     }
     return 0;
@@ -99,12 +109,20 @@ int battery_get_voltage_mv(void) {
 int battery_get_percentage(void) {
     int mv = battery_get_voltage_mv();
     
-    // Li-ion battery voltage range: 3.0V (0%) to 4.2V (100%)
-    if (mv <= BATTERY_MIN_MV) return 0;
-    if (mv >= BATTERY_MAX_MV) return 100;
+    if (mv >= lipo_curve[0].voltage) return 100;
+    if (mv <= lipo_curve[9].voltage) return 0;
+
+    for (int i = 0; i < 9; i++) {
+        if (mv <= lipo_curve[i].voltage && mv > lipo_curve[i+1].voltage) {
+            // Linear interpolation between points
+            int v_high = lipo_curve[i].voltage;
+            int v_low = lipo_curve[i+1].voltage;
+            int p_high = lipo_curve[i].percentage;
+            int p_low = lipo_curve[i+1].percentage;
+            
+            return p_low + ((mv - v_low) * (p_high - p_low)) / (v_high - v_low);
+        }
+    }
     
-    // Linear interpolation between min and max
-    int percentage = ((mv - BATTERY_MIN_MV) * 100) / (BATTERY_MAX_MV - BATTERY_MIN_MV);
-    
-    return percentage;
+    return 0;
 }

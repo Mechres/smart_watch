@@ -35,6 +35,7 @@ typedef enum {
     WATCHFACE_COMPACT,
     WATCHFACE_TERMINAL,
     WATCHFACE_MATRIX,
+    WATCHFACE_CATS,
     WATCHFACE_COUNT
 } watchface_t;
 
@@ -331,7 +332,8 @@ static void render_watchface_menu(void) {
         "Minimal",
         "Compact",
         "Terminal",
-        "Matrix"
+        "Matrix",
+        "Cats"
     };
     
     int start_idx = watchface_selection - 2;
@@ -376,6 +378,9 @@ static void render_watch_display(float temp, float hum, int16_t ax, int16_t ay, 
             break;
         case WATCHFACE_MATRIX:
             render_watchface_matrix(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
+            break;
+        case WATCHFACE_CATS:
+            render_watchface_cats(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
             break;
         default:
             render_watchface_digital(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);

@@ -187,16 +187,27 @@ static void ble_app_advertise(void) {
     fields.name_len = strlen(ble_svc_gap_device_name());
     fields.name_is_complete = 1;
 
-    ble_gap_adv_set_fields(&fields);
+    int rc = ble_gap_adv_set_fields(&fields);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to set advertisement data; rc=%d", rc);
+        return;
+    }
 
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
-    ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+    rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to start advertising; rc=%d", rc);
+    }
 }
 
 static void ble_on_sync(void) {
-    ble_hs_id_infer_auto(0, &s_addr_type);
+    int rc = ble_hs_id_infer_auto(0, &s_addr_type);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to infer address type; rc=%d", rc);
+        return;
+    }
     ble_app_advertise();
 }
 
@@ -218,13 +229,17 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
 
     esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
 
-    esp_err_t ret = esp_nimble_hci_init();
+    esp_err_t ret = esp_nimble_hci_and_controller_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init NimBLE HCI: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to init NimBLE controller/HCI: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    nimble_port_init();
+    ret = nimble_port_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init NimBLE host: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     ble_svc_gap_device_name_set("SmartWatch BLE");
     ble_svc_gap_init();

@@ -136,13 +136,13 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
         .characteristics = (struct ble_gatt_chr_def[]){
             {
                 .uuid = &NOTIFICATION_CHAR_UUID.u,
-                .access_cb = (ble_gatt_chr_fn *)gatt_svr_chr_access,
+                .access_cb = gatt_svr_chr_access,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
                 .val_handle = &s_notification_handle,
             },
             {
                 .uuid = &CONTROL_CHAR_UUID.u,
-                .access_cb = (ble_gatt_chr_fn *)gatt_svr_chr_access,
+                .access_cb = gatt_svr_chr_access,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
                 .val_handle = &s_control_handle,
             },

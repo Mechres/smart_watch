@@ -1,2 +1,20 @@
-idf_component_register(SRCS "main.c" "display.c" "settings.c" "power.c" "input.c" "sensors.c" "wifi_manager.c" "menu.c" "battery.c" "watchfaces.c" "pedometer.c" "weather.c" "ble_manager.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS
+        "main.c"
+        "display.c"
+        "settings.c"
+        "power.c"
+        "input.c"
+        "sensors.c"
+        "wifi_manager.c"
+        "menu.c"
+        "battery.c"
+        "watchfaces.c"
+        "pedometer.c"
+        "weather.c"
+        "ble_manager.c"
+    INCLUDE_DIRS
+        "."
+    PRIV_REQUIRES
+        bt
+)

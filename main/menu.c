@@ -13,6 +13,8 @@
 #include "input.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
 
 static const char *TAG = "Menu";
 
@@ -25,6 +27,8 @@ typedef enum {
     MENU_WATCHFACE,       // Watchface selection
     MENU_WEATHER,         // Weather display
     MENU_STOPWATCH,       // Stopwatch feature
+    MENU_SYSTEM_INFO,     // System Info
+    MENU_FLASHLIGHT,      // Flashlight
     MENU_COUNT
 } menu_mode_t;
 
@@ -71,6 +75,7 @@ static watchface_t current_watchface = WATCHFACE_DIGITAL;
 static int watchface_selection = 0;
 static int weather_selection = 0; // 0 = Refresh, 1 = Back
 static bool editing_mode = false;
+static uint8_t saved_brightness = 128;
 
 /* Stopwatch state */
 static bool stopwatch_running = false;
@@ -288,6 +293,51 @@ static void render_stopwatch_menu(void) {
     }
 }
 
+static void render_system_info_menu(void) {
+    fb_clear();
+    char buf[64];
+
+    fb_draw_text(0, 0, "===SYS INFO===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+
+    // Uptime
+    int64_t uptime_us = esp_timer_get_time();
+    int uptime_s = uptime_us / 1000000;
+    int h = uptime_s / 3600;
+    int m = (uptime_s % 3600) / 60;
+    int s = uptime_s % 60;
+    snprintf(buf, sizeof(buf), "Up: %02d:%02d:%02d", h, m, s);
+    fb_draw_text(0, 12, buf);
+
+    // Heap
+    uint32_t free_heap = esp_get_free_heap_size();
+    snprintf(buf, sizeof(buf), "Heap: %lu B", free_heap);
+    fb_draw_text(0, 22, buf);
+
+    // IP
+    esp_netif_ip_info_t ip_info;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif) {
+        esp_netif_get_ip_info(netif, &ip_info);
+        snprintf(buf, sizeof(buf), "IP: " IPSTR, IP2STR(&ip_info.ip));
+    } else {
+        snprintf(buf, sizeof(buf), "IP: Unknown");
+    }
+    fb_draw_text(0, 32, buf);
+
+    // MAC
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    snprintf(buf, sizeof(buf), "MAC:%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    fb_draw_text(0, 42, buf);
+
+    fb_draw_text(0, 54, "[Back]");
+}
+
+static void render_flashlight_menu(void) {
+    fb_fill_rect(0, 0, DISP_WIDTH, DISP_HEIGHT, 1);
+}
+
 static void render_root_menu(void) {
     fb_clear();
     fb_draw_text(0, 0, "===MENU===");
@@ -299,9 +349,11 @@ static void render_root_menu(void) {
         "Settings",
         "Watchface",
         "Stopwatch",
+        "System Info",
+        "Flashlight",
         "[Back]"
     };
-    int item_count = 6;
+    int item_count = 8;
 
     int start_idx = root_selection - 2;
     if (start_idx < 0) start_idx = 0;
@@ -405,6 +457,12 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
         case MENU_STOPWATCH:
             render_stopwatch_menu();
             break;
+        case MENU_SYSTEM_INFO:
+            render_system_info_menu();
+            break;
+        case MENU_FLASHLIGHT:
+            render_flashlight_menu();
+            break;
         case MENU_SETTINGS:
             render_settings_menu();
             break;
@@ -450,7 +508,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            if (root_selection < 5) root_selection++;
+            if (root_selection < 7) root_selection++;
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection < WATCHFACE_COUNT) watchface_selection++;
         } else if (current_menu == MENU_WEATHER) {
@@ -496,8 +554,19 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else if (root_selection == 4) {
                 current_menu = MENU_STOPWATCH;
             } else if (root_selection == 5) {
+                current_menu = MENU_SYSTEM_INFO;
+            } else if (root_selection == 6) {
+                current_menu = MENU_FLASHLIGHT;
+                saved_brightness = (uint8_t)brightness_editable;
+                sh1106_set_contrast(255);
+            } else if (root_selection == 7) {
                 current_menu = MENU_WATCH; // Back to watch
             }
+        } else if (current_menu == MENU_FLASHLIGHT) {
+             sh1106_set_contrast(saved_brightness);
+             current_menu = MENU_ROOT;
+        } else if (current_menu == MENU_SYSTEM_INFO) {
+            current_menu = MENU_ROOT; // Back
         } else if (current_menu == MENU_STOPWATCH) {
             if (stopwatch_running) {
                 // Stop

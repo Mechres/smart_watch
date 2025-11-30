@@ -7,6 +7,7 @@
 #include "pedometer.h"
 #include "weather.h"
 #include "esp_timer.h"
+#include "ble_manager.h"
 
 
 
@@ -152,6 +153,15 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
     const char *days[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
     snprintf(buf, sizeof(buf), "%s", days[timeinfo->tm_wday]);
     fb_draw_text(0, 48, buf);
+
+    ble_notification_t notif;
+    if (ble_manager_get_last_notification(&notif, false) && notif.has_data) {
+        char notif_line[64];
+        snprintf(notif_line, sizeof(notif_line), "MSG%s %s",
+                 notif.has_unread ? "*" : " ",
+                 notif.title[0] ? notif.title : "Yeni bildirim");
+        fb_draw_text(0, 56, notif_line);
+    }
 }
 
 /* Terminal watchface - retro command line style */

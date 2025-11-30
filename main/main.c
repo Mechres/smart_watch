@@ -24,6 +24,7 @@
 #include "battery.h"
 #include "pedometer.h"
 #include "weather.h"
+#include "ble_manager.h"
 
 static const char *TAG = "SmartWatch";
 
@@ -108,6 +109,35 @@ static void update_screen_state(bool motion_detected, int32_t current_time_s) {
         sh1106_display_off();
         screen_on = false;
     }
+}
+
+static void handle_ble_notification(const char *title, const char *body) {
+    ESP_LOGI(TAG, "BLE notification: %s | %s", title ? title : "", body ? body : "");
+
+    // Refresh screen and activity timer so alerts are visible
+    int32_t now_s = (int32_t)(esp_timer_get_time() / 1000000);
+    last_motion_time_s = now_s;
+    if (!screen_on) {
+        sh1106_display_on();
+        screen_on = true;
+    }
+}
+
+static void handle_ble_command(const char *command) {
+    if (!command) return;
+
+    if (strcmp(command, "wifi_on") == 0) {
+        wifi_start();
+    } else if (strcmp(command, "wifi_off") == 0) {
+        wifi_stop();
+    } else if (strcmp(command, "screen_on") == 0) {
+        sh1106_display_on();
+        screen_on = true;
+    } else if (strcmp(command, "screen_off") == 0) {
+        sh1106_display_off();
+        screen_on = false;
+    }
+    ESP_LOGI(TAG, "BLE control command handled: %s", command);
 }
 
 /* ---------- Main task: sensors + display + time ---------- */
@@ -299,6 +329,11 @@ void app_main(void) {
     ESP_LOGI(TAG, "Init WiFi");
     wifi_init_sta();
     wifi_stop(); // Ensure WiFi is off by default to save power
+
+    ESP_LOGI(TAG, "Init BLE");
+    if (ble_manager_init(handle_ble_notification, handle_ble_command) != ESP_OK) {
+        ESP_LOGE(TAG, "BLE init failed");
+    }
 
     // create main task
     xTaskCreate(main_task, "main_task", 8192, NULL, 5, NULL);

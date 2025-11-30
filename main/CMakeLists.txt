@@ -1,2 +1,31 @@
-idf_component_register(SRCS "main.c" "display.c" "settings.c" "power.c" "input.c" "sensors.c" "wifi_manager.c" "menu.c" "battery.c" "watchfaces.c" "pedometer.c" "weather.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS
+        "main.c"
+        "display.c"
+        "settings.c"
+        "power.c"
+        "input.c"
+        "sensors.c"
+        "wifi_manager.c"
+        "menu.c"
+        "battery.c"
+        "watchfaces.c"
+        "pedometer.c"
+        "weather.c"
+        "ble_manager.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        driver
+        esp_adc
+
+        esp_event
+        esp_http_client
+        esp_netif
+        esp_wifi
+        nvs_flash
+        json
+        mbedtls
+    PRIV_REQUIRES
+        bt
+)

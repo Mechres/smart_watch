@@ -15,6 +15,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+// Some toolchains omit the prototype unless specific NimBLE headers are pulled in; declare
+// it explicitly to avoid implicit declaration errors while still relying on the NimBLE
+// implementation provided by ESP-IDF.
+esp_err_t esp_nimble_hci_and_controller_init(void);
+
 static const char *TAG = "BLE";
 
 static ble_notification_callback_t s_notification_cb = NULL;

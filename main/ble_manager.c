@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_bt.h"
 #include "esp_nimble_hci.h"

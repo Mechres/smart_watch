@@ -15,10 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-// Some toolchains omit the prototype unless specific NimBLE headers are pulled in; declare
-// it explicitly to avoid implicit declaration errors while still relying on the NimBLE
-// implementation provided by ESP-IDF.
-esp_err_t esp_nimble_hci_and_controller_init(void);
+
 
 static const char *TAG = "BLE";
 
@@ -235,13 +232,10 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
 
     esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
 
-    esp_err_t ret = esp_nimble_hci_and_controller_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init NimBLE controller/HCI: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    // esp_nimble_hci_and_controller_init() is removed in IDF v5.0+
+    // nimble_port_init() handles the controller init if configured.
 
-    ret = nimble_port_init();
+    esp_err_t ret = nimble_port_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init NimBLE host: %s", esp_err_to_name(ret));
         return ret;

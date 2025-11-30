@@ -18,12 +18,14 @@ idf_component_register(
     REQUIRES
         driver
         esp_adc
-        esp_crt_bundle
+
         esp_event
         esp_http_client
         esp_netif
         esp_wifi
         nvs_flash
+        json
+        mbedtls
     PRIV_REQUIRES
         bt
 )

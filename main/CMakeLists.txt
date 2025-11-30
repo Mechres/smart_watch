@@ -15,6 +15,15 @@ idf_component_register(
         "ble_manager.c"
     INCLUDE_DIRS
         "."
+    REQUIRES
+        driver
+        esp_adc
+        esp_crt_bundle
+        esp_event
+        esp_http_client
+        esp_netif
+        esp_wifi
+        nvs_flash
     PRIV_REQUIRES
         bt
 )

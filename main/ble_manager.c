@@ -241,10 +241,6 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
                      event->subscribe.attr_handle, event->subscribe.reason, event->subscribe.prev_notify,
                      event->subscribe.cur_notify, event->subscribe.prev_indicate, event->subscribe.cur_indicate);
             break;
-        case BLE_GAP_EVENT_GATT_WRITE:
-            ESP_LOGI(TAG, "GATT write complete; attr_handle=%u status=%d", event->gatt_write.attr_handle,
-                     event->gatt_write.status);
-            break;
         default:
             break;
     }

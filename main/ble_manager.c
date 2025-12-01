@@ -46,6 +46,7 @@ static const ble_uuid128_t CONTROL_CHAR_UUID =
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg);
 static void ble_app_advertise(void);
+static int ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg);
 static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_size,
                                 uint16_t *out_len);
 
@@ -139,22 +140,27 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_UNLIKELY;
     }
 
-    ESP_LOGI(TAG, "GATT write op=%d len=%u", ctxt->op, data_len);
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        ESP_LOGW(TAG, "Unhandled GATT op=%d for attr=%u", ctxt->op, attr_handle);
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+
+    char uuid_str[BLE_UUID_STR_LEN];
+    ESP_LOGI(TAG, "GATT write attr=%u uuid=%s len=%u", attr_handle,
+             ble_uuid_to_str(ctxt->chr->uuid, uuid_str), data_len);
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, data_len, ESP_LOG_INFO);
 
     if (ble_uuid_cmp(ctxt->chr->uuid, &NOTIFICATION_CHAR_UUID.u) == 0) {
-        if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-            handle_notification_write(buffer, data_len);
-        }
+        handle_notification_write(buffer, data_len);
         return 0;
     }
 
     if (ble_uuid_cmp(ctxt->chr->uuid, &CONTROL_CHAR_UUID.u) == 0) {
-        if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-            handle_control_write(buffer, data_len);
-        }
+        handle_control_write(buffer, data_len);
         return 0;
     }
 
+    ESP_LOGW(TAG, "Write to unknown characteristic (attr=%u) ignored", attr_handle);
     return BLE_ATT_ERR_UNLIKELY;
 }
 
@@ -203,9 +209,38 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             s_ble_advertising = false;
             ble_app_advertise();
             break;
+        case BLE_GAP_EVENT_SUBSCRIBE:
+            ESP_LOGI(TAG, "Subscription event; attr_handle=%u reason=%d prevn=%d curn=%d previ=%d curi=%d",
+                     event->subscribe.attr_handle, event->subscribe.reason, event->subscribe.prev_notify,
+                     event->subscribe.cur_notify, event->subscribe.prev_indicate, event->subscribe.cur_indicate);
+            break;
         default:
             break;
     }
+    return 0;
+}
+
+static int ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {
+    char uuid_str[BLE_UUID_STR_LEN];
+
+    switch (ctxt->op) {
+        case BLE_GATT_REGISTER_OP_SVC:
+            ESP_LOGI(TAG, "Registered service %s with handle=%u",
+                     ble_uuid_to_str(ctxt->svc.svc_def->uuid, uuid_str), ctxt->svc.handle);
+            break;
+        case BLE_GATT_REGISTER_OP_CHR:
+            ESP_LOGI(TAG, "Registered characteristic %s with def_handle=%u val_handle=%u",
+                     ble_uuid_to_str(ctxt->chr.chr_def->uuid, uuid_str), ctxt->chr.def_handle, ctxt->chr.val_handle);
+            break;
+        case BLE_GATT_REGISTER_OP_DSC:
+            ESP_LOGI(TAG, "Registered descriptor %s with handle=%u",
+                     ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, uuid_str), ctxt->dsc.handle);
+            break;
+        default:
+            ESP_LOGW(TAG, "Unknown GATT registration op=%d", ctxt->op);
+            break;
+    }
+
     return 0;
 }
 
@@ -217,7 +252,7 @@ static void ble_app_advertise(void) {
     adv_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     adv_fields.tx_pwr_lvl_is_present = 1;
     adv_fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-    adv_fields.uuids128 = &SMARTWATCH_SERVICE_UUID;
+    adv_fields.uuids128 = (const ble_uuid128_t *)&SMARTWATCH_SERVICE_UUID;
     adv_fields.num_uuids128 = 1;
     adv_fields.uuids128_is_complete = 1;
 
@@ -308,6 +343,7 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
 
     ble_hs_cfg.reset_cb = ble_on_reset;
     ble_hs_cfg.sync_cb = ble_on_sync;
+    ble_hs_cfg.gatts_register_cb = ble_on_gatt_register;
 
     nimble_port_freertos_init(ble_host_task);
 

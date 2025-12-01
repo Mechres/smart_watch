@@ -24,6 +24,7 @@ static ble_control_callback_t s_control_cb = NULL;
 
 static SemaphoreHandle_t s_notif_mutex;
 static ble_notification_t s_last_notification = {0};
+static char s_last_command[48] = {0};
 
 static uint16_t s_notification_handle;
 static uint16_t s_control_handle;
@@ -99,16 +100,16 @@ static void handle_notification_write(const uint8_t *data, uint16_t len) {
 }
 
 static void handle_control_write(const uint8_t *data, uint16_t len) {
-    char command[48] = {0};
-    if (len >= sizeof(command)) {
-        len = sizeof(command) - 1;
+    memset(s_last_command, 0, sizeof(s_last_command));
+    if (len >= sizeof(s_last_command)) {
+        len = sizeof(s_last_command) - 1;
     }
-    memcpy(command, data, len);
-    command[len] = '\0';
+    memcpy(s_last_command, data, len);
+    s_last_command[len] = '\0';
 
-    ESP_LOGI(TAG, "Control command received: %s", command);
+    ESP_LOGI(TAG, "Control command received: %s", s_last_command);
     if (s_control_cb) {
-        s_control_cb(command);
+        s_control_cb(s_last_command);
     }
 }
 
@@ -130,37 +131,54 @@ static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_s
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg) {
     (void)conn_handle;
-    (void)attr_handle;
     (void)arg;
 
-    uint8_t buffer[sizeof(s_last_notification.title) + sizeof(s_last_notification.body) + 4] = {0};
-    uint16_t data_len = 0;
-
-    if (!copy_mbuf_to_buffer(ctxt->om, buffer, sizeof(buffer), &data_len)) {
-        return BLE_ATT_ERR_UNLIKELY;
-    }
-
-    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        ESP_LOGW(TAG, "Unhandled GATT op=%d for attr=%u", ctxt->op, attr_handle);
-        return BLE_ATT_ERR_UNLIKELY;
-    }
-
     char uuid_str[BLE_UUID_STR_LEN];
-    ESP_LOGI(TAG, "GATT write attr=%u uuid=%s len=%u", attr_handle,
-             ble_uuid_to_str(ctxt->chr->uuid, uuid_str), data_len);
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, data_len, ESP_LOG_INFO);
+    const char *uuid_readable = ctxt->chr ? ble_uuid_to_str(ctxt->chr->uuid, uuid_str) : "(null)";
+    ESP_LOGI(TAG, "GATT access op=%d attr=%u uuid=%s", ctxt->op, attr_handle, uuid_readable);
 
-    if (ble_uuid_cmp(ctxt->chr->uuid, &NOTIFICATION_CHAR_UUID.u) == 0) {
-        handle_notification_write(buffer, data_len);
-        return 0;
+    if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        uint8_t buffer[sizeof(s_last_notification.title) + sizeof(s_last_notification.body) + 4] = {0};
+        uint16_t data_len = 0;
+
+        if (!copy_mbuf_to_buffer(ctxt->om, buffer, sizeof(buffer), &data_len)) {
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, data_len, ESP_LOG_INFO);
+
+        if (attr_handle == s_notification_handle ||
+            (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &NOTIFICATION_CHAR_UUID.u) == 0)) {
+            handle_notification_write(buffer, data_len);
+            return 0;
+        }
+
+        if (attr_handle == s_control_handle ||
+            (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &CONTROL_CHAR_UUID.u) == 0)) {
+            handle_control_write(buffer, data_len);
+            return 0;
+        }
+
+        ESP_LOGW(TAG, "Write to unknown characteristic (attr=%u) ignored", attr_handle);
+        return BLE_ATT_ERR_UNLIKELY;
     }
 
-    if (ble_uuid_cmp(ctxt->chr->uuid, &CONTROL_CHAR_UUID.u) == 0) {
-        handle_control_write(buffer, data_len);
-        return 0;
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        if (attr_handle == s_notification_handle) {
+            int rc = os_mbuf_append(ctxt->om, &s_last_notification, sizeof(s_last_notification));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
+        if (attr_handle == s_control_handle) {
+            int rc = os_mbuf_append(ctxt->om, s_last_command, strlen(s_last_command));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
+        ESP_LOGW(TAG, "Read from unknown characteristic (attr=%u) ignored", attr_handle);
+        return BLE_ATT_ERR_ATTR_NOT_FOUND;
     }
 
-    ESP_LOGW(TAG, "Write to unknown characteristic (attr=%u) ignored", attr_handle);
+    ESP_LOGW(TAG, "Unhandled GATT op=%d for attr=%u", ctxt->op, attr_handle);
     return BLE_ATT_ERR_UNLIKELY;
 }
 
@@ -172,13 +190,13 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
             {
                 .uuid = &NOTIFICATION_CHAR_UUID.u,
                 .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ,
                 .val_handle = &s_notification_handle,
             },
             {
                 .uuid = &CONTROL_CHAR_UUID.u,
                 .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ,
                 .val_handle = &s_control_handle,
             },
             {0},

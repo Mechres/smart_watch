@@ -1,44 +1,129 @@
-# _Sample project_
+# ESP32-C3 Smart Watch
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+A feature-rich smartwatch firmware built for the **ESP32-C3 SuperMini** development board using the **ESP-IDF** framework. This project integrates an OLED display, accelerometer, and various sensors to provide a comprehensive wearable experience with multiple watchfaces, fitness tracking, weather updates, and smartphone connectivity.
 
-This is the simplest buildable example. The example is used by command `idf.py create-project`
-that copies the project to user specified path and set it's name. For more information follow the [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project)
+## Features
 
+### 🕒 Watchfaces
+Choose from a variety of stylish and functional watchfaces:
+- **Digital**: Large, easy-to-read time with date, steps, and environment info.
+- **Analog Style**: Classic analog clock face with digital date and step counter.
+- **Minimal**: Clean interface focusing on time and date.
+- **Compact**: Information-dense layout with time, date, battery, weather, steps, and notifications.
+- **Terminal**: Retro command-line interface style.
+- **Matrix**: "Digital rain" animation effect.
+- **Cats**: Animated cat pixel art.
 
+### 🏃 Fitness & Sensors
+- **Pedometer**: Accurate step counting using the ADXL345 accelerometer.
+- **Environment**: Real-time Temperature and Humidity readings (via SHT3x/AHT10).
+- **Motion Detection**: Wake-on-lift functionality to save battery.
 
-## How to use example
-We encourage the users to use the example as a template for the new projects.
-A recommended way is to follow the instructions on a [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project).
+### 📡 Connectivity
+- **Bluetooth Low Energy (BLE)**:
+  - **Notifications**: Receive notifications from your smartphone (Title & Body).
+  - **Remote Control**: Control watch features (WiFi, Screen) from your phone.
+  - **Service UUID**: `1d8a-503d-e931-369f-9f164b6f-106f-596a-178d`
+- **WiFi**:
+  - Connects to configured WiFi networks.
+  - **Weather**: Fetches current weather data (Temperature & Condition) from Open-Meteo API.
+  - *Note: WiFi is kept off by default to conserve power and only enabled for updates.*
 
-## Example folder contents
+### ⚙️ System
+- **Settings Menu**:
+  - Adjustable **Screen Brightness**.
+  - Configurable **Screen Timeout**.
+  - Adjustable **Motion Sensitivity**.
+  - Reboot and Power Off options.
+- **Tools**:
+  - **Stopwatch**: Simple start/stop/reset timer.
+  - **Flashlight**: Turns the screen white for emergency lighting.
+  - **System Info**: View Uptime, Heap Memory, IP Address, and MAC Address.
+- **Battery Monitoring**: Voltage and percentage display.
 
-The project **sample_project** contains one source file in C language [main.c](main/main.c). The file is located in folder [main](main).
+## Hardware Requirements
 
-ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt`
-files that provide set of directives and instructions describing the project's source files and targets
-(executable, library, or both). 
+| Component | Description | Connection / Pin |
+|-----------|-------------|------------------|
+| **MCU** | ESP32-C3 SuperMini | - |
+| **Display** | SH1106 OLED (128x64) | I2C (SDA: GPIO8, SCL: GPIO9) |
+| **Accel** | ADXL345 | I2C (SDA: GPIO8, SCL: GPIO9) |
+| **Sensor** | AHT10 / SHT3x (Temp/Hum) | I2C (SDA: GPIO8, SCL: GPIO9) |
+| **Buttons** | Push Buttons | GPIO Input (Active High/Low depending on config) |
+| **Battery** | LiPo Battery | Voltage Divider on GPIO2 |
 
-Below is short explanation of remaining files in the project folder.
+**Pinout Configuration:**
+- **I2C SDA**: GPIO 8
+- **I2C SCL**: GPIO 9
+- **Battery ADC**: GPIO 2
+- **Tap Interrupt**: GPIO 1 (Configured for ADXL345)
+
+## Installation
+
+### Prerequisites
+- **ESP-IDF v5.5** (or compatible version).
+- Python 3.11+.
+
+### Build & Flash
+
+1.  **Clone the repository:**
+    ```bash
+    git clone <repository-url>
+    cd smart_watch
+    ```
+
+2.  **Set up the environment:**
+    (If not already done via your IDE)
+    ```bash
+    . $HOME/esp/esp-idf/export.sh
+    ```
+
+3.  **Configure the project:**
+    ```bash
+    idf.py menuconfig
+    ```
+    *Configure WiFi credentials and other settings if necessary.*
+
+4.  **Build the project:**
+    ```bash
+    idf.py build
+    ```
+
+5.  **Flash to device:**
+    ```bash
+    idf.py -p <PORT> flash monitor
+    ```
+    *Replace `<PORT>` with your device's serial port (e.g., `COM3` on Windows or `/dev/ttyUSB0` on Linux).*
+
+## Usage
+
+- **Navigation**:
+  - **UP / DOWN**: Scroll through menus or change values.
+  - **OK**: Select item / Enter menu / Wake screen.
+  - **Back**: Return to previous menu (usually the last item in the list).
+- **Shortcuts**:
+  - Press **OK** on the watchface to enter the Main Menu.
+  - **Wake Screen**: Lift wrist (Motion) or press any button.
+
+## Project Structure
 
 ```
-├── CMakeLists.txt
-├── main
-│   ├── CMakeLists.txt
-│   └── main.c
-└── README.md                  This is the file you are currently reading
+smart_watch/
+├── main/
+│   ├── main.c           # Entry point, initialization, and main loop
+│   ├── menu.c           # Menu system logic and rendering
+│   ├── watchfaces.c     # Implementation of various watchfaces
+│   ├── display.c        # SH1106 OLED driver
+│   ├── sensors.c        # Sensor drivers (ADXL345, AHT10)
+│   ├── ble_manager.c    # BLE GAP/GATT handling
+│   ├── wifi_manager.c   # WiFi connection management
+│   ├── weather.c        # HTTP client for weather API
+│   ├── battery.c        # ADC reading for battery level
+│   └── ...
+├── CMakeLists.txt       # Project build configuration
+└── README.md            # This file
 ```
-Additionally, the sample project contains Makefile and component.mk files, used for the legacy Make based build system.
-They are not used or needed when building with CMake and idf.py.
 
-## BLE entegrasyonu
+## License
 
-Bu proje artık BLE üzerinden telefonla haberleşmeye hazır. NimBLE tabanlı bir GATT sunucusu açılır ve aşağıdaki özellikler yayınlanır:
-
-- **SmartWatch Service (UUID: 1d8a-503d-e931-369f-9f164b6f-106f-596a-178d)**
-  - `Notification RX` (UUID: 2480-757d-4f07-9fa5-0f48-e412-5a9b-dab8): Telefon bildirimlerini saatin alması için Write/Write No Response özelliği. Gönderilen veri `Baslik\nMesaj` veya `Baslik|Mesaj` formatında olmalı. Gövde olmadan gönderirseniz başlık otomatik olarak “Bildirim” olarak kullanılır.
-  - `Control RX` (UUID: b31c-b75e-410c-29ba-0b45-9da7-834d-f66e-0c6e): Saatteki özellikleri uzaktan yönetmek için Write/Write No Response. Şu an desteklenen komutlar: `wifi_on`, `wifi_off`, `screen_on`, `screen_off`.
-
-BLE cihaz adı `SmartWatch BLE` olarak yayınlanır. Varsayılan reklam modu bağlanılabilir ve keşfedilebilir; bağlantı koptuğunda otomatik olarak tekrar reklam başlatılır.
-
-Bildirim başlığı, Compact watchface üzerinde `MSG*` satırı olarak gösterilir (`*` okunmamış bildirimi belirtir). Gövde metni arka planda saklanır ve ileride telefon uygulaması ile genişletilebilir.
+This project is open source. Feel free to modify and distribute.

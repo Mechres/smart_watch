@@ -211,21 +211,29 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
 
 static void ble_app_advertise(void) {
     struct ble_gap_adv_params adv_params = {0};
-    struct ble_hs_adv_fields fields = {0};
+    struct ble_hs_adv_fields adv_fields = {0};
+    struct ble_hs_adv_fields rsp_fields = {0};
 
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.tx_pwr_lvl_is_present = 1;
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-    fields.name = (uint8_t *)ble_svc_gap_device_name();
-    fields.name_len = strlen(ble_svc_gap_device_name());
-    fields.name_is_complete = 1;
-    fields.svc_uuid128 = (ble_uuid128_t *)&SMARTWATCH_SERVICE_UUID;
-    fields.num_svc_uuid128 = 1;
-    fields.svc_uuid128_is_complete = 1;
+    adv_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    adv_fields.tx_pwr_lvl_is_present = 1;
+    adv_fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+    adv_fields.uuids128 = &SMARTWATCH_SERVICE_UUID;
+    adv_fields.num_uuids128 = 1;
+    adv_fields.uuids128_is_complete = 1;
 
-    int rc = ble_gap_adv_set_fields(&fields);
+    int rc = ble_gap_adv_set_fields(&adv_fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to set advertisement data; rc=%d", rc);
+        return;
+    }
+
+    rsp_fields.name = (uint8_t *)ble_svc_gap_device_name();
+    rsp_fields.name_len = strlen(ble_svc_gap_device_name());
+    rsp_fields.name_is_complete = 1;
+
+    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to set scan response data; rc=%d", rc);
         return;
     }
 

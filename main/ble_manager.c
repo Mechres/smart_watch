@@ -46,7 +46,7 @@ static const ble_uuid128_t CONTROL_CHAR_UUID =
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg);
 static void ble_app_advertise(void);
-static int ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg);
+static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg);
 static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_size,
                                 uint16_t *out_len);
 
@@ -220,7 +220,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     return 0;
 }
 
-static int ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {
+static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {
     char uuid_str[BLE_UUID_STR_LEN];
 
     switch (ctxt->op) {
@@ -241,7 +241,6 @@ static int ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) 
             break;
     }
 
-    return 0;
 }
 
 static void ble_app_advertise(void) {

@@ -9,6 +9,7 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
+#include "os/os_mbuf.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
@@ -29,6 +30,7 @@ static char s_last_command[48] = {0};
 static uint16_t s_notification_handle;
 static uint16_t s_control_handle;
 static uint8_t s_addr_type;
+static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool s_ble_connected = false;
 static bool s_ble_advertising = false;
 
@@ -50,6 +52,8 @@ static void ble_app_advertise(void);
 static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg);
 static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_size,
                                 uint16_t *out_len);
+static void send_write_ack(uint16_t conn_handle, uint16_t attr_handle, const uint8_t *data,
+                           uint16_t len);
 
 static void store_notification(const char *title, const char *body) {
     if (s_notif_mutex) {
@@ -130,12 +134,13 @@ static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_s
 
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg) {
-    (void)conn_handle;
     (void)arg;
 
     char uuid_str[BLE_UUID_STR_LEN];
     const char *uuid_readable = ctxt->chr ? ble_uuid_to_str(ctxt->chr->uuid, uuid_str) : "(null)";
-    ESP_LOGI(TAG, "GATT access op=%d attr=%u uuid=%s", ctxt->op, attr_handle, uuid_readable);
+    uint16_t pkt_len = ctxt->om ? OS_MBUF_PKTLEN(ctxt->om) : 0;
+    ESP_LOGI(TAG, "GATT access op=%d attr=%u uuid=%s len=%u", ctxt->op, attr_handle,
+             uuid_readable, pkt_len);
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
         uint8_t buffer[sizeof(s_last_notification.title) + sizeof(s_last_notification.body) + 4] = {0};
@@ -150,12 +155,14 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         if (attr_handle == s_notification_handle ||
             (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &NOTIFICATION_CHAR_UUID.u) == 0)) {
             handle_notification_write(buffer, data_len);
+            send_write_ack(conn_handle, s_notification_handle, buffer, data_len);
             return 0;
         }
 
         if (attr_handle == s_control_handle ||
             (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &CONTROL_CHAR_UUID.u) == 0)) {
             handle_control_write(buffer, data_len);
+            send_write_ack(conn_handle, s_control_handle, buffer, data_len);
             return 0;
         }
 
@@ -211,6 +218,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             if (event->connect.status == 0) {
                 ESP_LOGI(TAG, "BLE connected");
                 s_ble_connected = true;
+                s_conn_handle = event->connect.conn_handle;
                 s_ble_advertising = false;
             } else {
                 ESP_LOGW(TAG, "BLE connect failed; status=%d", event->connect.status);
@@ -220,6 +228,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_DISCONNECT:
             ESP_LOGI(TAG, "BLE disconnected; reason=%d", event->disconnect.reason);
             s_ble_connected = false;
+            s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             ble_app_advertise();
             break;
         case BLE_GAP_EVENT_ADV_COMPLETE:
@@ -232,10 +241,32 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
                      event->subscribe.attr_handle, event->subscribe.reason, event->subscribe.prev_notify,
                      event->subscribe.cur_notify, event->subscribe.prev_indicate, event->subscribe.cur_indicate);
             break;
+        case BLE_GAP_EVENT_GATT_WRITE:
+            ESP_LOGI(TAG, "GATT write complete; attr_handle=%u status=%d", event->gatt_write.attr_handle,
+                     event->gatt_write.status);
+            break;
         default:
             break;
     }
     return 0;
+}
+
+static void send_write_ack(uint16_t conn_handle, uint16_t attr_handle, const uint8_t *data,
+                           uint16_t len) {
+    if (conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    if (!om) {
+        ESP_LOGE(TAG, "Failed to alloc mbuf for write ack");
+        return;
+    }
+
+    int rc = ble_gatts_notify_custom(conn_handle, attr_handle, om);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Failed to send write ack (attr=%u rc=%d)", attr_handle, rc);
+    }
 }
 
 static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {

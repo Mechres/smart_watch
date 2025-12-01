@@ -9,6 +9,7 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
+#include "os/os_mbuf.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
@@ -24,10 +25,14 @@ static ble_control_callback_t s_control_cb = NULL;
 
 static SemaphoreHandle_t s_notif_mutex;
 static ble_notification_t s_last_notification = {0};
+static char s_last_command[48] = {0};
 
 static uint16_t s_notification_handle;
 static uint16_t s_control_handle;
 static uint8_t s_addr_type;
+static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static bool s_ble_connected = false;
+static bool s_ble_advertising = false;
 
 static const ble_uuid128_t SMARTWATCH_SERVICE_UUID =
     BLE_UUID128_INIT(0x8d, 0x17, 0x6a, 0x59, 0x10, 0x6f, 0x4b, 0x16,
@@ -44,6 +49,11 @@ static const ble_uuid128_t CONTROL_CHAR_UUID =
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg);
 static void ble_app_advertise(void);
+static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg);
+static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_size,
+                                uint16_t *out_len);
+static void send_write_ack(uint16_t conn_handle, uint16_t attr_handle, const uint8_t *data,
+                           uint16_t len);
 
 static void store_notification(const char *title, const char *body) {
     if (s_notif_mutex) {
@@ -94,41 +104,88 @@ static void handle_notification_write(const uint8_t *data, uint16_t len) {
 }
 
 static void handle_control_write(const uint8_t *data, uint16_t len) {
-    char command[48] = {0};
-    if (len >= sizeof(command)) {
-        len = sizeof(command) - 1;
+    memset(s_last_command, 0, sizeof(s_last_command));
+    if (len >= sizeof(s_last_command)) {
+        len = sizeof(s_last_command) - 1;
     }
-    memcpy(command, data, len);
-    command[len] = '\0';
+    memcpy(s_last_command, data, len);
+    s_last_command[len] = '\0';
 
-    ESP_LOGI(TAG, "Control command received: %s", command);
+    ESP_LOGI(TAG, "Control command received: %s", s_last_command);
     if (s_control_cb) {
-        s_control_cb(command);
+        s_control_cb(s_last_command);
     }
+}
+
+static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_size,
+                                uint16_t *out_len) {
+    int rc = ble_hs_mbuf_to_flat(om, dst, dst_size - 1, out_len);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to copy GATT write payload; rc=%d", rc);
+        return false;
+    }
+
+    if (*out_len >= dst_size) {
+        *out_len = dst_size - 1;
+    }
+    dst[*out_len] = '\0';
+    return true;
 }
 
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg) {
-    (void)conn_handle;
-    (void)attr_handle;
     (void)arg;
 
-    struct os_mbuf *om = ctxt->om;
+    char uuid_str[BLE_UUID_STR_LEN];
+    const char *uuid_readable = ctxt->chr ? ble_uuid_to_str(ctxt->chr->uuid, uuid_str) : "(null)";
+    uint16_t pkt_len = ctxt->om ? OS_MBUF_PKTLEN(ctxt->om) : 0;
+    ESP_LOGI(TAG, "GATT access op=%d attr=%u uuid=%s len=%u", ctxt->op, attr_handle,
+             uuid_readable, pkt_len);
 
-    if (ble_uuid_cmp(ctxt->chr->uuid, &NOTIFICATION_CHAR_UUID.u) == 0) {
-        if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-            handle_notification_write(om->om_data, om->om_len);
+    if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        uint8_t buffer[sizeof(s_last_notification.title) + sizeof(s_last_notification.body) + 4] = {0};
+        uint16_t data_len = 0;
+
+        if (!copy_mbuf_to_buffer(ctxt->om, buffer, sizeof(buffer), &data_len)) {
+            return BLE_ATT_ERR_UNLIKELY;
         }
-        return 0;
+
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, data_len, ESP_LOG_INFO);
+
+        if (attr_handle == s_notification_handle ||
+            (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &NOTIFICATION_CHAR_UUID.u) == 0)) {
+            handle_notification_write(buffer, data_len);
+            send_write_ack(conn_handle, s_notification_handle, buffer, data_len);
+            return 0;
+        }
+
+        if (attr_handle == s_control_handle ||
+            (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &CONTROL_CHAR_UUID.u) == 0)) {
+            handle_control_write(buffer, data_len);
+            send_write_ack(conn_handle, s_control_handle, buffer, data_len);
+            return 0;
+        }
+
+        ESP_LOGW(TAG, "Write to unknown characteristic (attr=%u) ignored", attr_handle);
+        return BLE_ATT_ERR_UNLIKELY;
     }
 
-    if (ble_uuid_cmp(ctxt->chr->uuid, &CONTROL_CHAR_UUID.u) == 0) {
-        if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-            handle_control_write(om->om_data, om->om_len);
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        if (attr_handle == s_notification_handle) {
+            int rc = os_mbuf_append(ctxt->om, &s_last_notification, sizeof(s_last_notification));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
-        return 0;
+
+        if (attr_handle == s_control_handle) {
+            int rc = os_mbuf_append(ctxt->om, s_last_command, strlen(s_last_command));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
+        ESP_LOGW(TAG, "Read from unknown characteristic (attr=%u) ignored", attr_handle);
+        return BLE_ATT_ERR_ATTR_NOT_FOUND;
     }
 
+    ESP_LOGW(TAG, "Unhandled GATT op=%d for attr=%u", ctxt->op, attr_handle);
     return BLE_ATT_ERR_UNLIKELY;
 }
 
@@ -140,13 +197,13 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
             {
                 .uuid = &NOTIFICATION_CHAR_UUID.u,
                 .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ,
                 .val_handle = &s_notification_handle,
             },
             {
                 .uuid = &CONTROL_CHAR_UUID.u,
                 .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ,
                 .val_handle = &s_control_handle,
             },
             {0},
@@ -160,6 +217,9 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_CONNECT:
             if (event->connect.status == 0) {
                 ESP_LOGI(TAG, "BLE connected");
+                s_ble_connected = true;
+                s_conn_handle = event->connect.conn_handle;
+                s_ble_advertising = false;
             } else {
                 ESP_LOGW(TAG, "BLE connect failed; status=%d", event->connect.status);
                 ble_app_advertise();
@@ -167,11 +227,19 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             break;
         case BLE_GAP_EVENT_DISCONNECT:
             ESP_LOGI(TAG, "BLE disconnected; reason=%d", event->disconnect.reason);
+            s_ble_connected = false;
+            s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             ble_app_advertise();
             break;
         case BLE_GAP_EVENT_ADV_COMPLETE:
             ESP_LOGI(TAG, "Advertisement complete; restarting");
+            s_ble_advertising = false;
             ble_app_advertise();
+            break;
+        case BLE_GAP_EVENT_SUBSCRIBE:
+            ESP_LOGI(TAG, "Subscription event; attr_handle=%u reason=%d prevn=%d curn=%d previ=%d curi=%d",
+                     event->subscribe.attr_handle, event->subscribe.reason, event->subscribe.prev_notify,
+                     event->subscribe.cur_notify, event->subscribe.prev_indicate, event->subscribe.cur_indicate);
             break;
         default:
             break;
@@ -179,20 +247,72 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     return 0;
 }
 
+static void send_write_ack(uint16_t conn_handle, uint16_t attr_handle, const uint8_t *data,
+                           uint16_t len) {
+    if (conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    if (!om) {
+        ESP_LOGE(TAG, "Failed to alloc mbuf for write ack");
+        return;
+    }
+
+    int rc = ble_gatts_notify_custom(conn_handle, attr_handle, om);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Failed to send write ack (attr=%u rc=%d)", attr_handle, rc);
+    }
+}
+
+static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {
+    char uuid_str[BLE_UUID_STR_LEN];
+
+    switch (ctxt->op) {
+        case BLE_GATT_REGISTER_OP_SVC:
+            ESP_LOGI(TAG, "Registered service %s with handle=%u",
+                     ble_uuid_to_str(ctxt->svc.svc_def->uuid, uuid_str), ctxt->svc.handle);
+            break;
+        case BLE_GATT_REGISTER_OP_CHR:
+            ESP_LOGI(TAG, "Registered characteristic %s with def_handle=%u val_handle=%u",
+                     ble_uuid_to_str(ctxt->chr.chr_def->uuid, uuid_str), ctxt->chr.def_handle, ctxt->chr.val_handle);
+            break;
+        case BLE_GATT_REGISTER_OP_DSC:
+            ESP_LOGI(TAG, "Registered descriptor %s with handle=%u",
+                     ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, uuid_str), ctxt->dsc.handle);
+            break;
+        default:
+            ESP_LOGW(TAG, "Unknown GATT registration op=%d", ctxt->op);
+            break;
+    }
+
+}
+
 static void ble_app_advertise(void) {
     struct ble_gap_adv_params adv_params = {0};
-    struct ble_hs_adv_fields fields = {0};
+    struct ble_hs_adv_fields adv_fields = {0};
+    struct ble_hs_adv_fields rsp_fields = {0};
 
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.tx_pwr_lvl_is_present = 1;
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-    fields.name = (uint8_t *)ble_svc_gap_device_name();
-    fields.name_len = strlen(ble_svc_gap_device_name());
-    fields.name_is_complete = 1;
+    adv_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    adv_fields.tx_pwr_lvl_is_present = 1;
+    adv_fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+    adv_fields.uuids128 = (const ble_uuid128_t *)&SMARTWATCH_SERVICE_UUID;
+    adv_fields.num_uuids128 = 1;
+    adv_fields.uuids128_is_complete = 1;
 
-    int rc = ble_gap_adv_set_fields(&fields);
+    int rc = ble_gap_adv_set_fields(&adv_fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to set advertisement data; rc=%d", rc);
+        return;
+    }
+
+    rsp_fields.name = (uint8_t *)ble_svc_gap_device_name();
+    rsp_fields.name_len = strlen(ble_svc_gap_device_name());
+    rsp_fields.name_is_complete = 1;
+
+    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to set scan response data; rc=%d", rc);
         return;
     }
 
@@ -202,6 +322,9 @@ static void ble_app_advertise(void) {
     rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to start advertising; rc=%d", rc);
+    } else {
+        s_ble_advertising = true;
+        ESP_LOGI(TAG, "Advertising started (addr_type=%u)", s_addr_type);
     }
 }
 
@@ -211,6 +334,16 @@ static void ble_on_sync(void) {
         ESP_LOGE(TAG, "Failed to infer address type; rc=%d", rc);
         return;
     }
+
+    rc = ble_gatts_start();
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to start GATT services; rc=%d", rc);
+        return;
+    }
+
+    ESP_LOGI(TAG, "GATT services started; notification handle=%u control handle=%u", s_notification_handle,
+             s_control_handle);
+
     ble_app_advertise();
 }
 
@@ -246,10 +379,15 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
     ble_svc_gatt_init();
 
     ble_gatts_count_cfg(gatt_svr_svcs);
-    ble_gatts_add_svcs(gatt_svr_svcs);
+    ret = ble_gatts_add_svcs(gatt_svr_svcs);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add GATT services: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     ble_hs_cfg.reset_cb = ble_on_reset;
     ble_hs_cfg.sync_cb = ble_on_sync;
+    ble_hs_cfg.gatts_register_cb = ble_on_gatt_register;
 
     nimble_port_freertos_init(ble_host_task);
 
@@ -294,4 +432,12 @@ void ble_manager_mark_notifications_read(void) {
     if (s_notif_mutex) {
         xSemaphoreGive(s_notif_mutex);
     }
+}
+
+bool ble_manager_is_connected(void) {
+    return s_ble_connected;
+}
+
+bool ble_manager_is_active(void) {
+    return s_ble_connected || s_ble_advertising;
 }

@@ -274,7 +274,11 @@ static void main_task(void *arg) {
         }
 
         // Sleep for adaptive interval based on power mode (saves battery)
-        if (mode == POWER_LIGHT_SLEEP) {
+        if (mode == POWER_LIGHT_SLEEP && ble_manager_is_active()) {
+            // Avoid light sleep while BLE is connected/advertising to keep the link alive
+            ESP_LOGD(TAG, "Skipping light sleep while BLE is active");
+            vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
+        } else if (mode == POWER_LIGHT_SLEEP) {
             // In light sleep, use esp_light_sleep_start instead of vTaskDelay
             // This stops the CPU but keeps RAM and peripherals (like I2C/GPIO) active
             esp_sleep_enable_timer_wakeup(poll_interval_ms * 1000);

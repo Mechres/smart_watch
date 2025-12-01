@@ -28,6 +28,8 @@ static ble_notification_t s_last_notification = {0};
 static uint16_t s_notification_handle;
 static uint16_t s_control_handle;
 static uint8_t s_addr_type;
+static bool s_ble_connected = false;
+static bool s_ble_advertising = false;
 
 static const ble_uuid128_t SMARTWATCH_SERVICE_UUID =
     BLE_UUID128_INIT(0x8d, 0x17, 0x6a, 0x59, 0x10, 0x6f, 0x4b, 0x16,
@@ -160,6 +162,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_CONNECT:
             if (event->connect.status == 0) {
                 ESP_LOGI(TAG, "BLE connected");
+                s_ble_connected = true;
+                s_ble_advertising = false;
             } else {
                 ESP_LOGW(TAG, "BLE connect failed; status=%d", event->connect.status);
                 ble_app_advertise();
@@ -167,10 +171,12 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             break;
         case BLE_GAP_EVENT_DISCONNECT:
             ESP_LOGI(TAG, "BLE disconnected; reason=%d", event->disconnect.reason);
+            s_ble_connected = false;
             ble_app_advertise();
             break;
         case BLE_GAP_EVENT_ADV_COMPLETE:
             ESP_LOGI(TAG, "Advertisement complete; restarting");
+            s_ble_advertising = false;
             ble_app_advertise();
             break;
         default:
@@ -202,6 +208,8 @@ static void ble_app_advertise(void) {
     rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to start advertising; rc=%d", rc);
+    } else {
+        s_ble_advertising = true;
     }
 }
 
@@ -211,6 +219,13 @@ static void ble_on_sync(void) {
         ESP_LOGE(TAG, "Failed to infer address type; rc=%d", rc);
         return;
     }
+
+    rc = ble_gatts_start();
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to start GATT services; rc=%d", rc);
+        return;
+    }
+
     ble_app_advertise();
 }
 
@@ -294,4 +309,12 @@ void ble_manager_mark_notifications_read(void) {
     if (s_notif_mutex) {
         xSemaphoreGive(s_notif_mutex);
     }
+}
+
+bool ble_manager_is_connected(void) {
+    return s_ble_connected;
+}
+
+bool ble_manager_is_active(void) {
+    return s_ble_connected || s_ble_advertising;
 }

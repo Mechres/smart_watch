@@ -25,6 +25,8 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
 bool ble_manager_get_last_notification(ble_notification_t *out, bool clear_unread);
 bool ble_manager_has_unread_notification(void);
 void ble_manager_mark_notifications_read(void);
+bool ble_manager_is_connected(void);
+bool ble_manager_is_active(void);
 
 #ifdef __cplusplus
 }

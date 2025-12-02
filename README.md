@@ -21,9 +21,21 @@ Choose from a variety of stylish and functional watchfaces:
 
 ### 📡 Connectivity
 - **Bluetooth Low Energy (BLE)**:
-  - **Notifications**: Receive notifications from your smartphone (Title & Body).
-  - **Remote Control**: Control watch features (WiFi, Screen) from your phone.
-  - **Service UUID**: `1d8a-503d-e931-369f-9f164b6f-106f-596a-178d`
+  - **Service UUID**: `1d8a503d-e931-369f-164b-6f10596a178d`
+  - **Characteristics**:
+    - **Notification** (`2480757d-4f07-9fa5-0f48-e4125a9bdab8`):
+      - Properties: Read, Write, Notify.
+      - Usage: Send text to display on the watch.
+      - Format: `Title|Body` or `Title\nBody` (e.g., `Message|Hello World`).
+    - **Control** (`b31cb75e-410c-29ba-0b45-9da7834df66e`):
+      - Properties: Read, Write, Notify.
+      - Usage: Send commands to control watch functions.
+      - Commands:
+        - `wifi_on`: Turn WiFi on.
+        - `wifi_off`: Turn WiFi off.
+        - `screen_on`: Wake the screen.
+        - `screen_off`: Turn the screen off.
+        - `time=<timestamp>`: Set system time (Unix epoch seconds).
 - **WiFi**:
   - Connects to configured WiFi networks.
   - **Weather**: Fetches current weather data (Temperature & Condition) from Open-Meteo API.

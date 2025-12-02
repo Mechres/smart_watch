@@ -139,6 +139,15 @@ static void handle_ble_command(const char *command) {
     } else if (strcmp(command, "screen_off") == 0) {
         sh1106_display_off();
         screen_on = false;
+    } else if (strncmp(command, "time=", 5) == 0) {
+        long long timestamp = atoll(command + 5);
+        if (timestamp > 0) {
+            struct timeval tv;
+            tv.tv_sec = (time_t)timestamp;
+            tv.tv_usec = 0;
+            settimeofday(&tv, NULL);
+            ESP_LOGI(TAG, "Time updated via BLE to: %lld", timestamp);
+        }
     }
     ESP_LOGI(TAG, "BLE control command handled: %s", command);
 }

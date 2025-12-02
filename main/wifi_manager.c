@@ -19,6 +19,9 @@ const int WIFI_CONNECTED_BIT = BIT0;
 static bool s_sntp_initialized = false;
 static void sntp_initialize(void);
 
+/* Sync Status: 0=Idle, 1=Syncing, 2=Success, 3=Failed */
+static volatile int s_sync_status = 0;
+
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data)
 {
@@ -76,8 +79,6 @@ static void sntp_initialize(void)
     esp_sntp_init();
 }
 
-
-
 void wifi_stop(void) {
     ESP_LOGI(TAG, "Stopping WiFi...");
     esp_wifi_disconnect();
@@ -104,4 +105,64 @@ bool wifi_ensure_connection(int timeout_ms) {
             pdTRUE,
             pdMS_TO_TICKS(timeout_ms));
     return (bits & WIFI_CONNECTED_BIT) != 0;
+}
+
+/* Async Time Sync Task */
+static void wifi_sync_time_task(void *arg) {
+    ESP_LOGI(TAG, "Starting Time Sync Task");
+    s_sync_status = 1; // Syncing
+
+    wifi_start();
+
+    // 1. Wait for WiFi Connection
+    if (!wifi_ensure_connection(10000)) {
+        ESP_LOGE(TAG, "Failed to connect to WiFi for time sync");
+        s_sync_status = 3; // Failed
+        wifi_stop();
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // 2. Wait for SNTP Sync
+    // We check if year > 2020 as a simple validity check
+    int retry = 0;
+    const int max_retries = 20; // 10 seconds (500ms * 20)
+    bool success = false;
+    while (retry < max_retries) {
+        time_t now;
+        time(&now);
+        struct tm timeinfo;
+        localtime_r(&now, &timeinfo);
+        if (timeinfo.tm_year > (2020 - 1900)) {
+            success = true;
+            break;
+        }
+        ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry + 1, max_retries);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        retry++;
+    }
+
+    if (success) {
+        ESP_LOGI(TAG, "Time synced successfully!");
+        s_sync_status = 2; // Success
+    } else {
+        ESP_LOGE(TAG, "Time sync timed out");
+        s_sync_status = 3; // Failed
+    }
+
+    wifi_stop();
+    vTaskDelete(NULL);
+}
+
+void wifi_sync_time_async(void) {
+    if (s_sync_status == 1) {
+        ESP_LOGW(TAG, "Sync already in progress");
+        return;
+    }
+    s_sync_status = 0; // Reset status
+    xTaskCreate(wifi_sync_time_task, "wifi_sync_task", 4096, NULL, 5, NULL);
+}
+
+int wifi_get_sync_status(void) {
+    return s_sync_status;
 }

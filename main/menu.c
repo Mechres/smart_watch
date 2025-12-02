@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "Menu";
 
@@ -30,6 +31,7 @@ typedef enum {
     MENU_SYSTEM_INFO,     // System Info
     MENU_FLASHLIGHT,      // Flashlight
     MENU_NOTIFICATION,    // Notification display
+    MENU_SYNC_WAIT,       // Waiting for WiFi Sync
     MENU_COUNT
 } menu_mode_t;
 
@@ -48,6 +50,7 @@ typedef enum {
     SETTINGS_MOTION_THRESHOLD = 0,
     SETTINGS_SCREEN_TIMEOUT,
     SETTINGS_BRIGHTNESS,
+    SETTINGS_TIME_SYNC,
     SETTINGS_REBOOT,
     SETTINGS_POWER_OFF,
     SETTINGS_BACK,
@@ -245,14 +248,17 @@ static void render_settings_menu(void) {
         draw_menu_item(36, buf, current_setting == SETTINGS_BRIGHTNESS);
     }
 
+    // Time Sync
+    draw_menu_item(48, "Time Sync", current_setting == SETTINGS_TIME_SYNC);
+
     // Reboot
-    draw_menu_item(48, "Reboot", current_setting == SETTINGS_REBOOT);
+    draw_menu_item(60, "Reboot", current_setting == SETTINGS_REBOOT);
 
     // Power Off
-    draw_menu_item(60, "Power Off", current_setting == SETTINGS_POWER_OFF);
+    draw_menu_item(72, "Power Off", current_setting == SETTINGS_POWER_OFF);
 
     // Back
-    draw_menu_item(72, "[Back]", current_setting == SETTINGS_BACK);
+    draw_menu_item(84, "[Back]", current_setting == SETTINGS_BACK);
 }
 
 static void render_weather_menu(void) {
@@ -376,10 +382,6 @@ static void render_notification_menu(void) {
     fb_draw_text(0, 12, notif_title);
     
     // Body (simple multi-line rendering)
-    // We'll just draw it line by line, wrapping manually is hard without font metrics helper
-    // For now, let's just draw it at y=24. If it's long, it might get cut off.
-    // A simple "wrap" by char count could work.
-    
     int y = 24;
     const char *p = notif_body;
     char line[22]; // ~21 chars fit on 128px wide screen with 6px font
@@ -394,6 +396,23 @@ static void render_notification_menu(void) {
     }
     
     fb_draw_text(0, 54, "[Any Key] Close");
+}
+
+static void render_sync_wait(void) {
+    fb_clear();
+    fb_draw_text(0, 0, "=== SYNC ===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    
+    int status = wifi_get_sync_status();
+    if (status == 1) {
+        fb_draw_text(0, 20, "Syncing...");
+        fb_draw_text(0, 35, "Please wait");
+    } else if (status == 2) {
+        fb_draw_text(0, 20, "Updated!");
+    } else if (status == 3) {
+        fb_draw_text(0, 20, "Failed!");
+        fb_draw_text(0, 35, "Check WiFi");
+    }
 }
 
 static void render_root_menu(void) {
@@ -530,6 +549,9 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
         case MENU_NOTIFICATION:
             render_notification_menu();
             break;
+        case MENU_SYNC_WAIT:
+            render_sync_wait();
+            break;
         default:
             render_watch_display(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
             break;
@@ -539,6 +561,12 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
 bool menu_handle_button(button_event_t event, int32_t current_time_s) {
     bool activity = true;
     menu_last_activity_s = current_time_s; // Update activity time
+
+    if (current_menu == MENU_SYNC_WAIT) {
+        // Any button press exits sync wait
+        current_menu = MENU_SETTINGS;
+        return true;
+    }
 
     if (event == BTN_UP_PRESS) {
         if (current_menu == MENU_ROOT) {
@@ -658,6 +686,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         } else if (current_menu == MENU_SETTINGS && !editing_mode) {
             if (current_setting == SETTINGS_BACK) {
                 current_menu = MENU_ROOT; // Back
+            } else if (current_setting == SETTINGS_TIME_SYNC) {
+                wifi_sync_time_async();
+                current_menu = MENU_SYNC_WAIT;
             } else if (current_setting == SETTINGS_REBOOT) {
                 ESP_LOGI(TAG, "Reboot requested");
                 esp_restart();
@@ -683,6 +714,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         } else if (current_menu == MENU_NOTIFICATION) {
              // Any key dismisses notification
              current_menu = MENU_WATCH;
+        } else if (current_menu == MENU_SYNC_WAIT) {
+             // Allow exit from sync wait
+             current_menu = MENU_SETTINGS;
         } else {
             current_menu = MENU_WATCH;
             editing_mode = false;

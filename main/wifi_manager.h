@@ -16,4 +16,8 @@ void wifi_start(void);
 bool wifi_is_connected(void);
 bool wifi_ensure_connection(int timeout_ms);
 
+/* Async Time Sync */
+void wifi_sync_time_async(void);
+int wifi_get_sync_status(void); // 0=Idle, 1=Syncing, 2=Success, 3=Failed
+
 #endif // WIFI_MANAGER_H

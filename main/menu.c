@@ -16,6 +16,7 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "wifi_manager.h"
+#include "ble_manager.h"
 
 static const char *TAG = "Menu";
 
@@ -32,6 +33,8 @@ typedef enum {
     MENU_FLASHLIGHT,      // Flashlight
     MENU_NOTIFICATION,    // Notification display
     MENU_SYNC_WAIT,       // Waiting for WiFi Sync
+    MENU_FIND_PHONE,      // Find My Phone
+    MENU_MUSIC_CONTROL,   // Music Control
     MENU_COUNT
 } menu_mode_t;
 
@@ -78,6 +81,8 @@ static int root_selection = 0; // 0 = Sensors, 1 = Weather, 2 = Settings, 3 = Wa
 static watchface_t current_watchface = WATCHFACE_DIGITAL;
 static int watchface_selection = 0;
 static int weather_selection = 0; // 0 = Refresh, 1 = Back
+static int music_selection = 0; // 0=Play/Pause, 1=Next, 2=Prev, 3=Back
+static int find_phone_selection = 0; // 0=Ring, 1=Back
 static bool editing_mode = false;
 
 static uint8_t saved_brightness = 128;
@@ -415,6 +420,34 @@ static void render_sync_wait(void) {
     }
 }
 
+static void render_find_phone_menu(void) {
+    fb_clear();
+    fb_draw_text(0, 0, "===FIND PHONE===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    
+    draw_menu_item(30, "Ring Phone", find_phone_selection == 0);
+    draw_menu_item(42, "[Back]", find_phone_selection == 1);
+}
+
+static void render_music_control_menu(void) {
+    fb_clear();
+    fb_draw_text(0, 0, "===MUSIC===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    
+    const char *items[] = {
+        "Play/Pause",
+        "Next Track",
+        "Prev Track",
+        "[Back]"
+    };
+    
+    int y_pos = 20;
+    for (int i = 0; i < 4; i++) {
+        draw_menu_item(y_pos, items[i], i == music_selection);
+        y_pos += 10;
+    }
+}
+
 static void render_root_menu(void) {
     fb_clear();
     fb_draw_text(0, 0, "===MENU===");
@@ -426,11 +459,13 @@ static void render_root_menu(void) {
         "Settings",
         "Watchface",
         "Stopwatch",
+        "Find Phone",
+        "Music Control",
         "System Info",
         "Flashlight",
         "[Back]"
     };
-    int item_count = 8;
+    int item_count = 10;
 
     int start_idx = root_selection - 2;
     if (start_idx < 0) start_idx = 0;
@@ -552,6 +587,12 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
         case MENU_SYNC_WAIT:
             render_sync_wait();
             break;
+        case MENU_FIND_PHONE:
+            render_find_phone_menu();
+            break;
+        case MENU_MUSIC_CONTROL:
+            render_music_control_menu();
+            break;
         default:
             render_watch_display(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
             break;
@@ -575,6 +616,10 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (watchface_selection > 0) watchface_selection--;
         } else if (current_menu == MENU_WEATHER) {
             if (weather_selection > 0) weather_selection--;
+        } else if (current_menu == MENU_FIND_PHONE) {
+            if (find_phone_selection > 0) find_phone_selection--;
+        } else if (current_menu == MENU_MUSIC_CONTROL) {
+            if (music_selection > 0) music_selection--;
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable += 10;
@@ -597,11 +642,15 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            if (root_selection < 7) root_selection++;
+            if (root_selection < 9) root_selection++;
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection < WATCHFACE_COUNT) watchface_selection++;
         } else if (current_menu == MENU_WEATHER) {
             if (weather_selection < 1) weather_selection++;
+        } else if (current_menu == MENU_FIND_PHONE) {
+            if (find_phone_selection < 1) find_phone_selection++;
+        } else if (current_menu == MENU_MUSIC_CONTROL) {
+            if (music_selection < 3) music_selection++;
         } else if (current_menu == MENU_STOPWATCH) {
             if (!stopwatch_running) {
                 stopwatch_elapsed_time = 0; // Reset
@@ -643,14 +692,31 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else if (root_selection == 4) {
                 current_menu = MENU_STOPWATCH;
             } else if (root_selection == 5) {
-                current_menu = MENU_SYSTEM_INFO;
+                current_menu = MENU_FIND_PHONE;
             } else if (root_selection == 6) {
+                current_menu = MENU_MUSIC_CONTROL;
+                music_selection = 0;
+            } else if (root_selection == 7) {
+                current_menu = MENU_SYSTEM_INFO;
+            } else if (root_selection == 8) {
                 current_menu = MENU_FLASHLIGHT;
                 saved_brightness = (uint8_t)brightness_editable;
                 sh1106_set_contrast(255);
-            } else if (root_selection == 7) {
+            } else if (root_selection == 9) {
                 current_menu = MENU_WATCH; // Back to watch
             }
+        } else if (current_menu == MENU_FIND_PHONE) {
+            if (find_phone_selection == 0) {
+                ble_manager_send_command("find_phone");
+            } else {
+                current_menu = MENU_ROOT;
+            }
+        } else if (current_menu == MENU_MUSIC_CONTROL) {
+            if (music_selection == 0) ble_manager_send_command("music_toggle");
+            else if (music_selection == 1) ble_manager_send_command("music_next");
+            else if (music_selection == 2) ble_manager_send_command("music_prev");
+            else current_menu = MENU_ROOT;
+
         } else if (current_menu == MENU_FLASHLIGHT) {
              sh1106_set_contrast(saved_brightness);
              current_menu = MENU_ROOT;

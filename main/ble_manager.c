@@ -432,7 +432,7 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
 
-    ble_svc_gap_device_name_set("SmartWatch BLE");
+    ble_svc_gap_device_name_set("Hikaboshi");
     ble_svc_gap_init();
     ble_svc_gatt_init();
 
@@ -498,4 +498,31 @@ bool ble_manager_is_connected(void) {
 
 bool ble_manager_is_active(void) {
     return s_ble_connected || s_ble_advertising;
+}
+
+esp_err_t ble_manager_send_command(const char *command) {
+    if (!s_ble_connected) {
+        ESP_LOGW(TAG, "Cannot send command: BLE not connected");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!command) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t len = strlen(command);
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(command, len);
+    if (!om) {
+        ESP_LOGE(TAG, "Failed to alloc mbuf for command");
+        return ESP_ERR_NO_MEM;
+    }
+
+    int rc = ble_gatts_notify_custom(s_conn_handle, s_control_handle, om);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to send command notification; rc=%d", rc);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Sent command: %s", command);
+    return ESP_OK;
 }

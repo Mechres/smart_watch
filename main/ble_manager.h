@@ -27,6 +27,7 @@ bool ble_manager_has_unread_notification(void);
 void ble_manager_mark_notifications_read(void);
 bool ble_manager_is_connected(void);
 bool ble_manager_is_active(void);
+esp_err_t ble_manager_send_command(const char *command);
 
 #ifdef __cplusplus
 }

@@ -29,6 +29,7 @@ typedef enum {
     MENU_STOPWATCH,       // Stopwatch feature
     MENU_SYSTEM_INFO,     // System Info
     MENU_FLASHLIGHT,      // Flashlight
+    MENU_NOTIFICATION,    // Notification display
     MENU_COUNT
 } menu_mode_t;
 
@@ -75,7 +76,12 @@ static watchface_t current_watchface = WATCHFACE_DIGITAL;
 static int watchface_selection = 0;
 static int weather_selection = 0; // 0 = Refresh, 1 = Back
 static bool editing_mode = false;
+
 static uint8_t saved_brightness = 128;
+
+/* Notification state */
+static char notif_title[32];
+static char notif_body[128];
 
 /* Stopwatch state */
 static bool stopwatch_running = false;
@@ -107,11 +113,34 @@ bool menu_is_watch_mode(void) {
 }
 
 void menu_check_timeout(int32_t current_time_s) {
-    if (current_menu != MENU_WATCH && (current_time_s - menu_last_activity_s) > 10) {
+    if (current_menu == MENU_NOTIFICATION) {
+        if ((current_time_s - menu_last_activity_s) > 10) {
+             ESP_LOGI(TAG, "Notification timeout - returning to watch");
+             current_menu = MENU_WATCH;
+        }
+    } else if (current_menu != MENU_WATCH && (current_time_s - menu_last_activity_s) > 10) {
         ESP_LOGI(TAG, "Menu timeout - returning to watch");
         current_menu = MENU_WATCH;
         editing_mode = false;
     }
+}
+
+void menu_show_notification(const char *title, const char *body) {
+    if (title) strncpy(notif_title, title, sizeof(notif_title) - 1);
+    else notif_title[0] = '\0';
+    
+    if (body) strncpy(notif_body, body, sizeof(notif_body) - 1);
+    else notif_body[0] = '\0';
+    
+    // Ensure null termination
+    notif_title[sizeof(notif_title) - 1] = '\0';
+    notif_body[sizeof(notif_body) - 1] = '\0';
+    
+    current_menu = MENU_NOTIFICATION;
+    // Reset activity timer handled by caller (main.c updates last_motion_time_s, 
+    // but we also need to update menu_last_activity_s to prevent immediate timeout)
+    // We use monotonic time to match main.c's time base
+    menu_last_activity_s = (int32_t)(esp_timer_get_time() / 1000000);
 }
 
 /* Render helpers */
@@ -338,6 +367,35 @@ static void render_flashlight_menu(void) {
     fb_fill_rect(0, 0, DISP_WIDTH, DISP_HEIGHT, 1);
 }
 
+static void render_notification_menu(void) {
+    fb_clear();
+    fb_draw_text(0, 0, "===NOTIFY===");
+    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    
+    // Title
+    fb_draw_text(0, 12, notif_title);
+    
+    // Body (simple multi-line rendering)
+    // We'll just draw it line by line, wrapping manually is hard without font metrics helper
+    // For now, let's just draw it at y=24. If it's long, it might get cut off.
+    // A simple "wrap" by char count could work.
+    
+    int y = 24;
+    const char *p = notif_body;
+    char line[22]; // ~21 chars fit on 128px wide screen with 6px font
+    
+    while (*p && y < DISP_HEIGHT) {
+        strncpy(line, p, 21);
+        line[21] = '\0';
+        fb_draw_text(0, y, line);
+        y += 10;
+        if (strlen(p) > 21) p += 21;
+        else break;
+    }
+    
+    fb_draw_text(0, 54, "[Any Key] Close");
+}
+
 static void render_root_menu(void) {
     fb_clear();
     fb_draw_text(0, 0, "===MENU===");
@@ -468,6 +526,9 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
             break;
         case MENU_WATCHFACE:
             render_watchface_menu();
+            break;
+        case MENU_NOTIFICATION:
+            render_notification_menu();
             break;
         default:
             render_watch_display(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
@@ -619,6 +680,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (current_sensor == SENSOR_BACK) {
                 current_menu = MENU_ROOT;
             }
+        } else if (current_menu == MENU_NOTIFICATION) {
+             // Any key dismisses notification
+             current_menu = MENU_WATCH;
         } else {
             current_menu = MENU_WATCH;
             editing_mode = false;

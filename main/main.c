@@ -114,6 +114,9 @@ static void update_screen_state(bool motion_detected, int32_t current_time_s) {
 static void handle_ble_notification(const char *title, const char *body) {
     ESP_LOGI(TAG, "BLE notification: %s | %s", title ? title : "", body ? body : "");
 
+    // Show notification on screen
+    menu_show_notification(title, body);
+
     // Refresh screen and activity timer so alerts are visible
     int32_t now_s = (int32_t)(esp_timer_get_time() / 1000000);
     last_motion_time_s = now_s;

@@ -25,4 +25,7 @@ bool menu_is_watch_mode(void);
 int16_t menu_get_motion_threshold(void);
 int16_t menu_get_screen_timeout(void);
 
+/* Show a notification on the screen */
+void menu_show_notification(const char *title, const char *body);
+
 #endif // MENU_H

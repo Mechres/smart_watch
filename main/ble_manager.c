@@ -23,6 +23,9 @@ static const char *TAG = "BLE";
 static ble_notification_callback_t s_notification_cb = NULL;
 static ble_control_callback_t s_control_cb = NULL;
 
+static uint8_t notification_value_buf[160];
+static uint8_t control_value_buf[48];
+
 static SemaphoreHandle_t s_notif_mutex;
 static ble_notification_t s_last_notification = {0};
 static char s_last_command[48] = {0};
@@ -132,62 +135,113 @@ static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_s
     return true;
 }
 
+/* ULTRA-VERBOSE gatt_svr_chr_access callback */
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg) {
     (void)arg;
-
+    
+    // Log every single access
+    printf("GATT CALLBACK INVOKED - printf check\n");
+    fflush(stdout);
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   GATT CALLBACK INVOKED - TIMESTAMP: %lld     ║", esp_timer_get_time());
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════════╝");
+    
     char uuid_str[BLE_UUID_STR_LEN];
     const char *uuid_readable = ctxt->chr ? ble_uuid_to_str(ctxt->chr->uuid, uuid_str) : "(null)";
     uint16_t pkt_len = ctxt->om ? OS_MBUF_PKTLEN(ctxt->om) : 0;
-    ESP_LOGI(TAG, "GATT access op=%d attr=%u uuid=%s len=%u", ctxt->op, attr_handle,
-             uuid_readable, pkt_len);
+    
+    ESP_LOGI(TAG, "  Operation: %d (0=read_chr, 1=write_chr, 2=read_dsc, 3=write_dsc)", ctxt->op);
+    ESP_LOGI(TAG, "  Conn Handle: %u", conn_handle);
+    ESP_LOGI(TAG, "  Attr Handle: %u", attr_handle);
+    ESP_LOGI(TAG, "  UUID: %s", uuid_readable);
+    ESP_LOGI(TAG, "  Packet Len: %u", pkt_len);
+    ESP_LOGI(TAG, "  s_notification_handle: %u", s_notification_handle);
+    ESP_LOGI(TAG, "  s_control_handle: %u", s_control_handle);
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        uint8_t buffer[sizeof(s_last_notification.title) + sizeof(s_last_notification.body) + 4] = {0};
+        printf("WRITE OPERATION DETECTED - printf check\n");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "  ▶▶▶▶▶ WRITE OPERATION DETECTED ◀◀◀◀◀");
+        ESP_LOGI(TAG, "");
+        
+        uint8_t buffer[256] = {0};
         uint16_t data_len = 0;
 
         if (!copy_mbuf_to_buffer(ctxt->om, buffer, sizeof(buffer), &data_len)) {
+            ESP_LOGE(TAG, "  ✗ Failed to copy mbuf data");
             return BLE_ATT_ERR_UNLIKELY;
         }
 
+        ESP_LOGI(TAG, "  Write Data Length: %u bytes", data_len);
         ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, data_len, ESP_LOG_INFO);
+        ESP_LOGI(TAG, "  Write Data (ASCII): '%.*s'", data_len, buffer);
 
-        if (attr_handle == s_notification_handle ||
-            (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &NOTIFICATION_CHAR_UUID.u) == 0)) {
+        if (attr_handle == s_notification_handle) {
+            ESP_LOGI(TAG, "  ✓✓✓ NOTIFICATION CHARACTERISTIC WRITE ✓✓✓");
             handle_notification_write(buffer, data_len);
             send_write_ack(conn_handle, s_notification_handle, buffer, data_len);
             return 0;
         }
 
-        if (attr_handle == s_control_handle ||
-            (ctxt->chr && ble_uuid_cmp(ctxt->chr->uuid, &CONTROL_CHAR_UUID.u) == 0)) {
+        if (attr_handle == s_control_handle) {
+            ESP_LOGI(TAG, "  ✓✓✓ CONTROL CHARACTERISTIC WRITE ✓✓✓");
             handle_control_write(buffer, data_len);
             send_write_ack(conn_handle, s_control_handle, buffer, data_len);
             return 0;
         }
 
-        ESP_LOGW(TAG, "Write to unknown characteristic (attr=%u) ignored", attr_handle);
+        ESP_LOGW(TAG, "  ✗✗✗ UNKNOWN HANDLE - NO MATCH ✗✗✗");
         return BLE_ATT_ERR_UNLIKELY;
     }
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        ESP_LOGI(TAG, "  ▶▶▶ READ OPERATION ◀◀◀");
+        
         if (attr_handle == s_notification_handle) {
+            ESP_LOGI(TAG, "  Reading notification characteristic");
             int rc = os_mbuf_append(ctxt->om, &s_last_notification, sizeof(s_last_notification));
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
         if (attr_handle == s_control_handle) {
+            ESP_LOGI(TAG, "  Reading control characteristic");
             int rc = os_mbuf_append(ctxt->om, s_last_command, strlen(s_last_command));
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
-        ESP_LOGW(TAG, "Read from unknown characteristic (attr=%u) ignored", attr_handle);
+        ESP_LOGW(TAG, "  Read from unknown handle");
         return BLE_ATT_ERR_ATTR_NOT_FOUND;
     }
 
-    ESP_LOGW(TAG, "Unhandled GATT op=%d for attr=%u", ctxt->op, attr_handle);
+    ESP_LOGW(TAG, "  Unhandled operation type");
     return BLE_ATT_ERR_UNLIKELY;
 }
+
+static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {
+    char uuid_str[BLE_UUID_STR_LEN];
+
+    switch (ctxt->op) {
+        case BLE_GATT_REGISTER_OP_SVC:
+            ESP_LOGI(TAG, "Registered service %s with handle=%u",
+                     ble_uuid_to_str(ctxt->svc.svc_def->uuid, uuid_str), ctxt->svc.handle);
+            break;
+        case BLE_GATT_REGISTER_OP_CHR:
+            ESP_LOGI(TAG, "Registered characteristic %s with def_handle=%u val_handle=%u",
+                     ble_uuid_to_str(ctxt->chr.chr_def->uuid, uuid_str), 
+                     ctxt->chr.def_handle, ctxt->chr.val_handle);
+            break;
+        case BLE_GATT_REGISTER_OP_DSC:
+            ESP_LOGI(TAG, "Registered descriptor %s with handle=%u",
+                     ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, uuid_str), ctxt->dsc.handle);
+            break;
+        default:
+            ESP_LOGW(TAG, "Unknown GATT registration op=%d", ctxt->op);
+            break;
+    }
+}
+
 
 static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
     {
@@ -197,13 +251,13 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
             {
                 .uuid = &NOTIFICATION_CHAR_UUID.u,
                 .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &s_notification_handle,
             },
             {
                 .uuid = &CONTROL_CHAR_UUID.u,
                 .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &s_control_handle,
             },
             {0},
@@ -211,8 +265,11 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
     },
     {0},
 };
-
 static int ble_gap_event(struct ble_gap_event *event, void *arg) {
+    ESP_LOGI(TAG, "╔═══════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   BLE GAP EVENT: type=%d          ║", event->type);
+    ESP_LOGI(TAG, "╚═══════════════════════════════════╝");
+    
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
             if (event->connect.status == 0) {
@@ -241,7 +298,16 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
                      event->subscribe.attr_handle, event->subscribe.reason, event->subscribe.prev_notify,
                      event->subscribe.cur_notify, event->subscribe.prev_indicate, event->subscribe.cur_indicate);
             break;
+        case BLE_GAP_EVENT_MTU:
+            ESP_LOGI(TAG, "MTU update event; conn_handle=%d cid=%d mtu=%d",
+                     event->mtu.conn_handle, event->mtu.channel_id, event->mtu.value);
+            break;
+        case BLE_GAP_EVENT_NOTIFY_TX:
+            ESP_LOGI(TAG, "Notify TX complete; status=%d conn_handle=%d attr_handle=%d",
+                     event->notify_tx.status, event->notify_tx.conn_handle, event->notify_tx.attr_handle);
+            break;
         default:
+            ESP_LOGI(TAG, "Unhandled GAP event: %d", event->type);
             break;
     }
     return 0;
@@ -265,28 +331,6 @@ static void send_write_ack(uint16_t conn_handle, uint16_t attr_handle, const uin
     }
 }
 
-static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {
-    char uuid_str[BLE_UUID_STR_LEN];
-
-    switch (ctxt->op) {
-        case BLE_GATT_REGISTER_OP_SVC:
-            ESP_LOGI(TAG, "Registered service %s with handle=%u",
-                     ble_uuid_to_str(ctxt->svc.svc_def->uuid, uuid_str), ctxt->svc.handle);
-            break;
-        case BLE_GATT_REGISTER_OP_CHR:
-            ESP_LOGI(TAG, "Registered characteristic %s with def_handle=%u val_handle=%u",
-                     ble_uuid_to_str(ctxt->chr.chr_def->uuid, uuid_str), ctxt->chr.def_handle, ctxt->chr.val_handle);
-            break;
-        case BLE_GATT_REGISTER_OP_DSC:
-            ESP_LOGI(TAG, "Registered descriptor %s with handle=%u",
-                     ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, uuid_str), ctxt->dsc.handle);
-            break;
-        default:
-            ESP_LOGW(TAG, "Unknown GATT registration op=%d", ctxt->op);
-            break;
-    }
-
-}
 
 static void ble_app_advertise(void) {
     struct ble_gap_adv_params adv_params = {0};
@@ -324,7 +368,7 @@ static void ble_app_advertise(void) {
         ESP_LOGE(TAG, "Failed to start advertising; rc=%d", rc);
     } else {
         s_ble_advertising = true;
-        ESP_LOGI(TAG, "Advertising started (addr_type=%u)", s_addr_type);
+        ESP_LOGI(TAG, "Advertising started (addr_type=%u) - VERSION 2", s_addr_type);
     }
 }
 
@@ -352,6 +396,7 @@ static void ble_on_reset(int reason) {
 }
 
 static void ble_host_task(void *param) {
+    ESP_LOGI(TAG, "BLE Host Task Started");
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
@@ -360,7 +405,12 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
                            ble_control_callback_t control_cb) {
     s_notification_cb = notification_cb;
     s_control_cb = control_cb;
-
+    ble_hs_cfg.gatts_register_cb = ble_on_gatt_register;
+    
+    // Enable verbose NimBLE logging
+    esp_log_level_set("NimBLE", ESP_LOG_DEBUG);
+    esp_log_level_set("BLE_GATTS", ESP_LOG_DEBUG);
+    esp_log_level_set("BLE_HS", ESP_LOG_DEBUG);
     s_notif_mutex = xSemaphoreCreateMutex();
 
     esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
@@ -373,6 +423,14 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
         ESP_LOGE(TAG, "Failed to init NimBLE host: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    // Security Configuration
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_sc = 0; // Legacy pairing
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
 
     ble_svc_gap_device_name_set("SmartWatch BLE");
     ble_svc_gap_init();

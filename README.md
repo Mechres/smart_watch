@@ -36,10 +36,10 @@ Choose from a variety of stylish and functional watchfaces:
         - `screen_on`: Wake the screen.
         - `screen_off`: Turn the screen off.
         - `time=<timestamp>`: Set system time (Unix epoch seconds).
+        - `weather=<temp>,<code>`: Set weather (e.g., `weather=24.5,1`).
 - **WiFi**:
   - Connects to configured WiFi networks.
-  - **Weather**: Fetches current weather data (Temperature & Condition) from Open-Meteo API.
-  - *Note: WiFi is kept off by default to conserve power and only enabled for updates.*
+  - *Note: WiFi is kept off by default to conserve power.*
 
 ### ⚙️ System
 - **Settings Menu**:
@@ -129,7 +129,7 @@ smart_watch/
 │   ├── sensors.c        # Sensor drivers (ADXL345, AHT10)
 │   ├── ble_manager.c    # BLE GAP/GATT handling
 │   ├── wifi_manager.c   # WiFi connection management
-│   ├── weather.c        # HTTP client for weather API
+│   ├── weather.c        # Weather data storage (pushed via BLE)
 │   ├── battery.c        # ADC reading for battery level
 │   └── ...
 ├── CMakeLists.txt       # Project build configuration

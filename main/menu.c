@@ -80,7 +80,7 @@ static sensor_item_t current_sensor = SENSOR_TEMP;
 static int root_selection = 0; // 0 = Sensors, 1 = Weather, 2 = Settings, 3 = Watchface
 static watchface_t current_watchface = WATCHFACE_DIGITAL;
 static int watchface_selection = 0;
-static int weather_selection = 0; // 0 = Refresh, 1 = Back
+// weather_selection removed
 static int music_selection = 0; // 0=Play/Pause, 1=Next, 2=Prev, 3=Back
 static int find_phone_selection = 0; // 0=Ring, 1=Stop, 2=Back
 static bool editing_mode = false;
@@ -273,26 +273,21 @@ static void render_weather_menu(void) {
     fb_draw_text(0, 0, "===WEATHER===");
     fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
     
-    if (weather_is_fetching()) {
-        fb_draw_text(0, 20, "Loading...");
+    weather_data_t w = weather_get_current();
+    if (w.valid) {
+        snprintf(buf, sizeof(buf), "Temp: %.1f C", w.temp_c);
+        fb_draw_text(0, 15, buf);
+        
+        const char *desc = weather_get_desc(w.weather_code);
+        snprintf(buf, sizeof(buf), "%s", desc);
+        fb_draw_text(0, 27, buf);
     } else {
-        weather_data_t w = weather_get_current();
-        if (w.valid) {
-            snprintf(buf, sizeof(buf), "Temp: %.1f C", w.temp_c);
-            fb_draw_text(0, 15, buf);
-            
-            const char *desc = weather_get_desc(w.weather_code);
-            snprintf(buf, sizeof(buf), "%s", desc);
-            fb_draw_text(0, 27, buf);
-        } else {
-            fb_draw_text(0, 15, "No Data");
-            fb_draw_text(0, 27, "Connect WiFi");
-        }
+        fb_draw_text(0, 15, "No Data");
+        fb_draw_text(0, 27, "Sync via App");
     }
     
     // Draw actions
-    draw_menu_item(42, "Refresh", weather_selection == 0);
-    draw_menu_item(53, "[Back]", weather_selection == 1);
+    draw_menu_item(53, "[Back]", true);
 }
 
 static void render_stopwatch_menu(void) {
@@ -615,8 +610,6 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (root_selection > 0) root_selection--;
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection > 0) watchface_selection--;
-        } else if (current_menu == MENU_WEATHER) {
-            if (weather_selection > 0) weather_selection--;
         } else if (current_menu == MENU_FIND_PHONE) {
             if (find_phone_selection > 0) find_phone_selection--;
         } else if (current_menu == MENU_MUSIC_CONTROL) {
@@ -646,8 +639,6 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (root_selection < 9) root_selection++;
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection < WATCHFACE_COUNT) watchface_selection++;
-        } else if (current_menu == MENU_WEATHER) {
-            if (weather_selection < 1) weather_selection++;
         } else if (current_menu == MENU_FIND_PHONE) {
             if (find_phone_selection < 2) find_phone_selection++;
         } else if (current_menu == MENU_MUSIC_CONTROL) {
@@ -684,7 +675,6 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (root_selection == 0) current_menu = MENU_SENSOR_DATA;
             else if (root_selection == 1) {
                 current_menu = MENU_WEATHER;
-                weather_selection = 0; // Reset to Refresh
             }
             else if (root_selection == 2) current_menu = MENU_SETTINGS;
             else if (root_selection == 3) {
@@ -737,12 +727,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 stopwatch_running = true;
             }
         } else if (current_menu == MENU_WEATHER) {
-            if (weather_selection == 0) {
-                ESP_LOGI(TAG, "Manual weather refresh requested");
-                weather_fetch_async();
-            } else {
-                current_menu = MENU_ROOT; // Back
-            }
+            current_menu = MENU_ROOT; // Back
         } else if (current_menu == MENU_WATCHFACE) {
             if (watchface_selection == WATCHFACE_COUNT) {
                 current_menu = MENU_ROOT; // Back

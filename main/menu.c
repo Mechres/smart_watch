@@ -82,7 +82,7 @@ static watchface_t current_watchface = WATCHFACE_DIGITAL;
 static int watchface_selection = 0;
 static int weather_selection = 0; // 0 = Refresh, 1 = Back
 static int music_selection = 0; // 0=Play/Pause, 1=Next, 2=Prev, 3=Back
-static int find_phone_selection = 0; // 0=Ring, 1=Back
+static int find_phone_selection = 0; // 0=Ring, 1=Stop, 2=Back
 static bool editing_mode = false;
 
 static uint8_t saved_brightness = 128;
@@ -426,7 +426,8 @@ static void render_find_phone_menu(void) {
     fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
     
     draw_menu_item(30, "Ring Phone", find_phone_selection == 0);
-    draw_menu_item(42, "[Back]", find_phone_selection == 1);
+    draw_menu_item(42, "Stop ring", find_phone_selection == 1);
+    draw_menu_item(54, "[Back]", find_phone_selection == 2);
 }
 
 static void render_music_control_menu(void) {
@@ -648,7 +649,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         } else if (current_menu == MENU_WEATHER) {
             if (weather_selection < 1) weather_selection++;
         } else if (current_menu == MENU_FIND_PHONE) {
-            if (find_phone_selection < 1) find_phone_selection++;
+            if (find_phone_selection < 2) find_phone_selection++;
         } else if (current_menu == MENU_MUSIC_CONTROL) {
             if (music_selection < 3) music_selection++;
         } else if (current_menu == MENU_STOPWATCH) {
@@ -708,7 +709,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         } else if (current_menu == MENU_FIND_PHONE) {
             if (find_phone_selection == 0) {
                 ble_manager_send_command("find_phone");
-            } else {
+            } else if (find_phone_selection == 1) {
+                ble_manager_send_command("find_phone_stop");
+            }else {
                 current_menu = MENU_ROOT;
             }
         } else if (current_menu == MENU_MUSIC_CONTROL) {

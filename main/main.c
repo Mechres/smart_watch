@@ -137,9 +137,14 @@ static void handle_ble_command(const char *command) {
     } else if (strcmp(command, "screen_on") == 0) {
         sh1106_display_on();
         screen_on = true;
+        // Reset inactivity timer so it doesn't immediately turn off
+        last_motion_time_s = (int32_t)(esp_timer_get_time() / 1000000);
     } else if (strcmp(command, "screen_off") == 0) {
         sh1106_display_off();
         screen_on = false;
+        // Force inactivity timer to expire so it can enter light sleep immediately
+        // Subtracting 60s ensures we are well past the light sleep threshold (30s)
+        last_motion_time_s = (int32_t)(esp_timer_get_time() / 1000000) - 60;
     } else if (strncmp(command, "time=", 5) == 0) {
         long long timestamp = atoll(command + 5);
         if (timestamp > 0) {

@@ -220,50 +220,69 @@ static void render_settings_menu(void) {
     fb_draw_text(0, 0, "===SETTINGS===");
     fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
     
-    // Motion Threshold
-    if (current_setting == SETTINGS_MOTION_THRESHOLD && editing_mode) {
-        snprintf(buf, sizeof(buf), "Motion: [%d]", motion_threshold_editable);
-        fb_fill_rect(0, 12, DISP_WIDTH, 10, 1);
-        fb_draw_text_ex(2, 13, buf, 0, -1);
-        fb_draw_text(100, 13, "<>");
-    } else {
-        snprintf(buf, sizeof(buf), "Motion: %d", motion_threshold_editable);
-        draw_menu_item(12, buf, current_setting == SETTINGS_MOTION_THRESHOLD);
+    int start_idx = current_setting - 2;
+    if (start_idx < 0) start_idx = 0;
+    if (start_idx > SETTINGS_COUNT - 5) start_idx = SETTINGS_COUNT - 5;
+    if (start_idx < 0) start_idx = 0;
+
+    int y_pos = 12;
+
+    for (int i = start_idx; i < start_idx + 5 && i < SETTINGS_COUNT; i++) {
+        bool is_selected = (i == current_setting);
+
+        switch (i) {
+            case SETTINGS_MOTION_THRESHOLD:
+                if (editing_mode && is_selected) {
+                    snprintf(buf, sizeof(buf), "Motion: [%d]", motion_threshold_editable);
+                    fb_fill_rect(0, y_pos, DISP_WIDTH, 10, 1);
+                    fb_draw_text_ex(2, y_pos + 1, buf, 0, -1);
+                    fb_draw_text(100, y_pos + 1, "<>");
+                } else {
+                    snprintf(buf, sizeof(buf), "Motion: %d", motion_threshold_editable);
+                    draw_menu_item(y_pos, buf, is_selected);
+                }
+                break;
+            case SETTINGS_SCREEN_TIMEOUT:
+                if (editing_mode && is_selected) {
+                    snprintf(buf, sizeof(buf), "Timeout: [%d]s", screen_timeout_editable);
+                    fb_fill_rect(0, y_pos, DISP_WIDTH, 10, 1);
+                    fb_draw_text_ex(2, y_pos + 1, buf, 0, -1);
+                    fb_draw_text(100, y_pos + 1, "<>");
+                } else {
+                    snprintf(buf, sizeof(buf), "Timeout: %d s", screen_timeout_editable);
+                    draw_menu_item(y_pos, buf, is_selected);
+                }
+                break;
+            case SETTINGS_BRIGHTNESS:
+                if (editing_mode && is_selected) {
+                    snprintf(buf, sizeof(buf), "Bright: [%d]", brightness_editable);
+                    fb_fill_rect(0, y_pos, DISP_WIDTH, 10, 1);
+                    fb_draw_text_ex(2, y_pos + 1, buf, 0, -1);
+                    fb_draw_text(100, y_pos + 1, "<>");
+                } else {
+                    snprintf(buf, sizeof(buf), "Bright: %d", brightness_editable);
+                    draw_menu_item(y_pos, buf, is_selected);
+                }
+                break;
+            case SETTINGS_TIME_SYNC:
+                draw_menu_item(y_pos, "Time Sync", is_selected);
+                break;
+            case SETTINGS_REBOOT:
+                draw_menu_item(y_pos, "Reboot", is_selected);
+                break;
+            case SETTINGS_POWER_OFF:
+                draw_menu_item(y_pos, "Power Off", is_selected);
+                break;
+            case SETTINGS_BACK:
+                draw_menu_item(y_pos, "[Back]", is_selected);
+                break;
+        }
+        y_pos += 10;
     }
-    
-    // Screen Timeout
-    if (current_setting == SETTINGS_SCREEN_TIMEOUT && editing_mode) {
-        snprintf(buf, sizeof(buf), "Timeout: [%d]s", screen_timeout_editable);
-        fb_fill_rect(0, 24, DISP_WIDTH, 10, 1);
-        fb_draw_text_ex(2, 25, buf, 0, -1);
-        fb_draw_text(100, 25, "<>");
-    } else {
-        snprintf(buf, sizeof(buf), "Timeout: %d s", screen_timeout_editable);
-        draw_menu_item(24, buf, current_setting == SETTINGS_SCREEN_TIMEOUT);
-    }
 
-    // Brightness
-    if (current_setting == SETTINGS_BRIGHTNESS && editing_mode) {
-        snprintf(buf, sizeof(buf), "Bright: [%d]", brightness_editable);
-        fb_fill_rect(0, 36, DISP_WIDTH, 10, 1);
-        fb_draw_text_ex(2, 37, buf, 0, -1);
-        fb_draw_text(100, 37, "<>");
-    } else {
-        snprintf(buf, sizeof(buf), "Bright: %d", brightness_editable);
-        draw_menu_item(36, buf, current_setting == SETTINGS_BRIGHTNESS);
-    }
-
-    // Time Sync
-    draw_menu_item(48, "Time Sync", current_setting == SETTINGS_TIME_SYNC);
-
-    // Reboot
-    draw_menu_item(60, "Reboot", current_setting == SETTINGS_REBOOT);
-
-    // Power Off
-    draw_menu_item(72, "Power Off", current_setting == SETTINGS_POWER_OFF);
-
-    // Back
-    draw_menu_item(84, "[Back]", current_setting == SETTINGS_BACK);
+    // Scroll indicators
+    if (start_idx > 0) fb_draw_text(120, 12, "^");
+    if (start_idx + 5 < SETTINGS_COUNT) fb_draw_text(120, 54, "v");
 }
 
 static void render_weather_menu(void) {
@@ -496,27 +515,28 @@ static void render_watchface_menu(void) {
         "Cats"
     };
     
+    // Total items = WATCHFACE_COUNT + 1 (for Back)
+    int total_items = WATCHFACE_COUNT + 1;
+    
     int start_idx = watchface_selection - 2;
     if (start_idx < 0) start_idx = 0;
-    if (start_idx > WATCHFACE_COUNT - 5) start_idx = WATCHFACE_COUNT - 5;
+    if (start_idx > total_items - 5) start_idx = total_items - 5;
     if (start_idx < 0) start_idx = 0;
     
     int y_pos = 12;
-    for (int i = start_idx; i < start_idx + 5 && i < WATCHFACE_COUNT; i++) {
+    for (int i = start_idx; i < start_idx + 5 && i < total_items; i++) {
         bool is_selected = (i == watchface_selection);
-        draw_menu_item(y_pos, names[i], is_selected);
+        
+        if (i < WATCHFACE_COUNT) {
+            draw_menu_item(y_pos, names[i], is_selected);
+        } else {
+            draw_menu_item(y_pos, "[Back]", is_selected);
+        }
         y_pos += 10;
     }
-    
-    // Show Back option at the end if scrolled there
-    if (watchface_selection == WATCHFACE_COUNT) {
-         draw_menu_item(y_pos, "[Back]", true);
-    } else if (start_idx + 5 >= WATCHFACE_COUNT) {
-         draw_menu_item(y_pos, "[Back]", false);
-    }
-    
+
     if (start_idx > 0) fb_draw_text(120, 12, "^");
-    if (start_idx + 5 < WATCHFACE_COUNT) fb_draw_text(120, 54, "v");
+    if (start_idx + 5 < total_items) fb_draw_text(120, 54, "v");
 }
 
 static void render_watch_display(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {

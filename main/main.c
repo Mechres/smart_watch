@@ -12,6 +12,7 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_sleep.h"
+#include "esp_pm.h"
 
 #include "display.h"
 #include "watchfaces.h"
@@ -323,6 +324,14 @@ void app_main(void) {
     // Set timezone to UTC+3 (Istanbul)
     setenv("TZ", "TRT-3", 1);
     tzset();
+
+    ESP_LOGI(TAG, "Configuring Power Management");
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = 160,
+        .min_freq_mhz = 80,
+        .light_sleep_enable = true
+    };
+    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
 
     ESP_LOGI(TAG, "Init I2C");
     if (i2c_master_init() != ESP_OK) {

@@ -29,6 +29,9 @@ bool ble_manager_is_connected(void);
 bool ble_manager_is_active(void);
 esp_err_t ble_manager_send_command(const char *command);
 
+esp_err_t ble_manager_update_battery(uint8_t level);
+esp_err_t ble_manager_update_steps(uint32_t steps);
+
 #ifdef __cplusplus
 }
 #endif

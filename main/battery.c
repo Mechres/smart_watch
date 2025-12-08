@@ -26,6 +26,7 @@ static const char *TAG = "Battery";
 
 static adc_oneshot_unit_handle_t adc1_handle;
 static adc_cali_handle_t adc1_cali_handle = NULL;
+static float s_smoothed_voltage = 0.0f;
 
 // LiPo discharge curve lookup table (Voltage -> Percentage)
 typedef struct {
@@ -99,9 +100,18 @@ int battery_get_voltage_mv(void) {
         }
         
         // Apply voltage divider ratio to get actual battery voltage
-        int battery_voltage_mv = (int)(gpio_voltage_mv * VOLTAGE_DIVIDER_RATIO);
+        int raw_battery_mv = (int)(gpio_voltage_mv * VOLTAGE_DIVIDER_RATIO);
         
-        return battery_voltage_mv;
+        // Apply EMA smoothing
+        // If first reading (0.0f), initialize immediately
+        if (s_smoothed_voltage < 1.0f) {
+            s_smoothed_voltage = (float)raw_battery_mv;
+        } else {
+            // Alpha = 0.1 (Heavy smoothing: 10% new, 90% old)
+            s_smoothed_voltage = (s_smoothed_voltage * 0.9f) + ((float)raw_battery_mv * 0.1f);
+        }
+        
+        return (int)s_smoothed_voltage;
     }
     return 0;
 }

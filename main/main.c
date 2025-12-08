@@ -243,6 +243,10 @@ static void main_task(void *arg) {
         batt_mv = battery_get_voltage_mv();
         batt_pct = battery_get_percentage();
         
+        // Update BLE characteristics
+        ble_manager_update_battery((uint8_t)batt_pct);
+        ble_manager_update_steps((uint32_t)pedometer_get_steps());
+        
         if (mode != POWER_DEEP_SLEEP) {
             // Read sensors normally in active/idle/light-sleep modes
             sensors_read_temp_hum(&temp, &hum);

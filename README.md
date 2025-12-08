@@ -37,6 +37,12 @@ Choose from a variety of stylish and functional watchfaces:
         - `screen_off`: Turn the screen off.
         - `time=<timestamp>`: Set system time (Unix epoch seconds).
         - `weather=<temp>,<code>`: Set weather (e.g., `weather=24.5,1`).
+    - **Battery** (`12345678-90ab-cdef-1234-567890abcdef`):
+      - Properties: Read, Notify.
+      - Usage: Read current battery percentage (0-100).
+    - **Steps** (`fedcba98-7654-3210-fedc-ba9876543210`):
+      - Properties: Read, Notify.
+      - Usage: Read current step count.
 - **WiFi**:
   - Connects to configured WiFi networks.
   - *Note: WiFi is kept off by default to conserve power.*

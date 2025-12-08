@@ -32,6 +32,11 @@ static char s_last_command[48] = {0};
 
 static uint16_t s_notification_handle;
 static uint16_t s_control_handle;
+static uint16_t s_battery_handle;
+static uint16_t s_steps_handle;
+
+static uint8_t s_battery_val = 0;
+static uint32_t s_steps_val = 0;
 static uint8_t s_addr_type;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool s_ble_connected = false;
@@ -48,6 +53,14 @@ static const ble_uuid128_t NOTIFICATION_CHAR_UUID =
 static const ble_uuid128_t CONTROL_CHAR_UUID =
     BLE_UUID128_INIT(0x6e, 0xf6, 0x4d, 0x83, 0xa7, 0x9d, 0x45, 0x0b,
                      0xba, 0x29, 0x0c, 0x41, 0x5e, 0xb7, 0x1c, 0xb3);
+
+static const ble_uuid128_t BATTERY_CHAR_UUID =
+    BLE_UUID128_INIT(0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12,
+                     0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12);
+
+static const ble_uuid128_t STEPS_CHAR_UUID =
+    BLE_UUID128_INIT(0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe,
+                     0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe);
 
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -211,6 +224,18 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
+        if (attr_handle == s_battery_handle) {
+            ESP_LOGI(TAG, "  Reading battery characteristic");
+            int rc = os_mbuf_append(ctxt->om, &s_battery_val, sizeof(s_battery_val));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
+        if (attr_handle == s_steps_handle) {
+            ESP_LOGI(TAG, "  Reading steps characteristic");
+            int rc = os_mbuf_append(ctxt->om, &s_steps_val, sizeof(s_steps_val));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
         ESP_LOGW(TAG, "  Read from unknown handle");
         return BLE_ATT_ERR_ATTR_NOT_FOUND;
     }
@@ -259,6 +284,18 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
                 .access_cb = gatt_svr_chr_access,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &s_control_handle,
+            },
+            {
+                .uuid = &BATTERY_CHAR_UUID.u,
+                .access_cb = gatt_svr_chr_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &s_battery_handle,
+            },
+            {
+                .uuid = &STEPS_CHAR_UUID.u,
+                .access_cb = gatt_svr_chr_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &s_steps_handle,
             },
             {0},
         },
@@ -524,5 +561,39 @@ esp_err_t ble_manager_send_command(const char *command) {
     }
 
     ESP_LOGI(TAG, "Sent command: %s", command);
+    return ESP_OK;
+}
+
+esp_err_t ble_manager_update_battery(uint8_t level) {
+    if (s_battery_val == level) {
+        return ESP_OK; // No change
+    }
+    
+    s_battery_val = level;
+    
+    if (s_ble_connected) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(&s_battery_val, sizeof(s_battery_val));
+        if (!om) {
+            return ESP_ERR_NO_MEM;
+        }
+        ble_gatts_notify_custom(s_conn_handle, s_battery_handle, om);
+    }
+    return ESP_OK;
+}
+
+esp_err_t ble_manager_update_steps(uint32_t steps) {
+    if (s_steps_val == steps) {
+        return ESP_OK; // No change
+    }
+
+    s_steps_val = steps;
+
+    if (s_ble_connected) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(&s_steps_val, sizeof(s_steps_val));
+        if (!om) {
+            return ESP_ERR_NO_MEM;
+        }
+        ble_gatts_notify_custom(s_conn_handle, s_steps_handle, om);
+    }
     return ESP_OK;
 }

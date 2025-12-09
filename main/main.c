@@ -184,6 +184,7 @@ static void main_task(void *arg) {
     sensors_init();
     battery_init();
     pedometer_init();
+    pedometer_load();
     
     // Configure GPIO 1 for tap interrupt
     gpio_config_t io_conf = {};
@@ -226,6 +227,9 @@ static void main_task(void *arg) {
         // Use monotonic time for timeouts
         int64_t current_mono_us = esp_timer_get_time();
         int32_t current_mono_s = (int32_t)(current_mono_us / 1000000);
+
+        // Check for midnight reset (uses RTC time)
+        pedometer_check_midnight(&timeinfo);
 
         // Calculate inactivity time and update power mode
         uint32_t inactivity_secs = (current_mono_s - last_motion_time_s);
@@ -303,6 +307,15 @@ static void main_task(void *arg) {
         }
 
         // Sleep for adaptive interval based on power mode (saves battery)
+        
+        // Periodic Save (e.g. every 30 minutes = 1800 seconds)
+        // We use a simple static counter or timer check
+        static int32_t last_save_s = 0;
+        if ((current_mono_s - last_save_s) > 1800) {
+             pedometer_save();
+             last_save_s = current_mono_s;
+        }
+
         if (mode == POWER_LIGHT_SLEEP && ble_manager_is_active()) {
             // Avoid light sleep while BLE is connected/advertising to keep the link alive
             ESP_LOGD(TAG, "Skipping light sleep while BLE is active");

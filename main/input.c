@@ -8,6 +8,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_sleep.h"
+#include "power.h"
 
 /* Button GPIO pins */
 #define BUTTON_UP_GPIO   7
@@ -15,7 +16,8 @@
 #define BUTTON_OK_GPIO   5
 
 /* Debounce polling interval (ms) */
-#define DEBOUNCE_POLL_MS 20
+#define DEBOUNCE_POLL_MS_ACTIVE 20
+#define DEBOUNCE_POLL_MS_IDLE   100
 
 static const char *TAG = "input";
 static QueueHandle_t button_queue = NULL;
@@ -25,12 +27,16 @@ void input_register_notify_task(TaskHandle_t task_handle) {
     s_notify_task_handle = task_handle;
 }
 
-/* Debounce task: monitors GPIO every 20ms and posts events on edge transition */
+/* Debounce task: monitors GPIO and posts events on edge transition.
+ * Polls at 20 ms while active; backs off to 100 ms in light sleep. */
 static void debounce_task(void *arg) {
     bool last_up = false, last_down = false, last_ok = false;
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_POLL_MS));
+        uint32_t poll_ms = (power_get_mode() == POWER_ACTIVE)
+                               ? DEBOUNCE_POLL_MS_ACTIVE
+                               : DEBOUNCE_POLL_MS_IDLE;
+        vTaskDelay(pdMS_TO_TICKS(poll_ms));
 
         // Read current GPIO states (active-low: pressed = 0)
         bool up_now = (gpio_get_level(BUTTON_UP_GPIO) == 0);
@@ -43,21 +49,21 @@ static void debounce_task(void *arg) {
         if (up_now && !last_up) {
             button_event_t event = BTN_UP_PRESS;
             if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
-                ESP_LOGI(TAG, "UP button pressed");
+                ESP_LOGD(TAG, "UP button pressed");
                 event_generated = true;
             }
         }
         if (down_now && !last_down) {
             button_event_t event = BTN_DOWN_PRESS;
             if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
-                ESP_LOGI(TAG, "DOWN button pressed");
+                ESP_LOGD(TAG, "DOWN button pressed");
                 event_generated = true;
             }
         }
         if (ok_now && !last_ok) {
             button_event_t event = BTN_OK_PRESS;
             if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
-                ESP_LOGI(TAG, "OK button pressed");
+                ESP_LOGD(TAG, "OK button pressed");
                 event_generated = true;
             }
         }
@@ -108,29 +114,10 @@ bool input_get_event(button_event_t *event) {
     return xQueueReceive(button_queue, event, 0) == pdTRUE;  // Non-blocking
 }
 
-/* Legacy polling APIs (for compatibility with existing menu code) */
-bool input_button_up_pressed(void) {
-    return gpio_get_level(BUTTON_UP_GPIO) == 0;
-}
-
-bool input_button_down_pressed(void) {
-    return gpio_get_level(BUTTON_DOWN_GPIO) == 0;
-}
-
-bool input_button_ok_pressed(void) {
-    return gpio_get_level(BUTTON_OK_GPIO) == 0;
-}
-
 void input_enable_wakeup(void) {
     // Enable wakeup on low level for button pins (Light Sleep)
     gpio_wakeup_enable(BUTTON_UP_GPIO, GPIO_INTR_LOW_LEVEL);
     gpio_wakeup_enable(BUTTON_DOWN_GPIO, GPIO_INTR_LOW_LEVEL);
     gpio_wakeup_enable(BUTTON_OK_GPIO, GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
-}
-
-void input_enable_deep_sleep_wakeup(void) {
-    // Enable wakeup on low level for button pins (Deep Sleep)
-    uint64_t mask = (1ULL << BUTTON_OK_GPIO);
-    esp_deep_sleep_enable_gpio_wakeup(mask, ESP_GPIO_WAKEUP_GPIO_LOW);
 }

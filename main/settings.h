@@ -14,4 +14,7 @@ esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int 
 /* Save settings to NVS */
 esp_err_t settings_save(int16_t motion_threshold, int16_t screen_timeout, int watchface, int16_t brightness);
 
+/* Erase saved settings (namespace only; pedometer NVS is separate) */
+esp_err_t settings_reset(void);
+
 #endif // SETTINGS_H

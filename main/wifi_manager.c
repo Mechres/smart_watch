@@ -17,6 +17,8 @@ static const char *TAG = "WiFiManager";
 static EventGroupHandle_t s_wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
 static bool s_sntp_initialized = false;
+static bool s_wifi_inited = false;
+static volatile bool s_wifi_enabled = false;
 static void sntp_initialize(void);
 
 /* Sync Status: 0=Idle, 1=Syncing, 2=Success, 3=Failed */
@@ -26,11 +28,16 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_wifi_enabled) {
+            esp_wifi_connect();
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGI(TAG, "wifi disconnected, reconnecting...");
-        esp_wifi_connect();
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        // Only reconnect when WiFi was intentionally enabled (avoids racing wifi_stop)
+        if (s_wifi_enabled) {
+            ESP_LOGI(TAG, "wifi disconnected, reconnecting...");
+            esp_wifi_connect();
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         if (!s_sntp_initialized) {
@@ -42,6 +49,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 
 void wifi_init_sta(void)
 {
+    if (s_wifi_inited) {
+        return;
+    }
+
     s_wifi_event_group = xEventGroupCreate();
 
     esp_netif_init();
@@ -64,11 +75,9 @@ void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM)); // Enable Modem Sleep
-    ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi init finished. Connecting to SSID:%s", WIFI_SSID);
-    // Non-blocking: we don't wait here anymore.
-    // Connection result will be handled in event handler.
+    s_wifi_inited = true;
+    ESP_LOGI(TAG, "WiFi driver initialized (SSID:%s)", WIFI_SSID);
 }
 
 static void sntp_initialize(void)
@@ -81,12 +90,23 @@ static void sntp_initialize(void)
 
 void wifi_stop(void) {
     ESP_LOGI(TAG, "Stopping WiFi...");
-    esp_wifi_disconnect();
-    esp_wifi_stop();
+    s_wifi_enabled = false;
+    if (s_wifi_inited) {
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+    }
+    if (s_sntp_initialized) {
+        esp_sntp_stop();
+    }
+    if (s_wifi_event_group) {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
 }
 
 void wifi_start(void) {
     ESP_LOGI(TAG, "Starting WiFi...");
+    wifi_init_sta(); /* lazy init on first use */
+    s_wifi_enabled = true;
     esp_wifi_start();
     esp_wifi_connect();
 }

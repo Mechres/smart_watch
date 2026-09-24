@@ -14,6 +14,7 @@ idf_component_register(
         "weather.c"
         "ble_manager.c"
         "gesture.c"
+        "ota_updater.c"
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -22,11 +23,12 @@ idf_component_register(
 
         esp_event
         esp_http_client
+        esp_https_ota
         esp_netif
         esp_wifi
         nvs_flash
-        json
         mbedtls
     PRIV_REQUIRES
         bt
+        app_update
 )

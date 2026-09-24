@@ -61,10 +61,30 @@ void fb_draw_rect(int x, int y, int w, int h, int color) {
 }
 
 void fb_fill_rect(int x, int y, int w, int h, int color) {
-    for (int i = x; i < x + w; i++) {
-        for (int j = y; j < y + h; j++) {
-            fb_set_pixel(i, j, color);
+    if (w <= 0 || h <= 0) return;
+
+    /* Clip to screen */
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > DISP_WIDTH ? DISP_WIDTH : x + w;
+    int y1 = y + h > DISP_HEIGHT ? DISP_HEIGHT : y + h;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    /* Fast path: operate byte-wise on fully covered pages */
+    int page_start = y0 >> 3;
+    int page_end = (y1 - 1) >> 3;
+
+    for (int page = page_start; page <= page_end; page++) {
+        int bit_lo = (page == page_start) ? (y0 & 7) : 0;
+        int bit_hi = (page == page_end) ? ((y1 - 1) & 7) : 7;
+        uint8_t mask = (uint8_t)(((1u << (bit_hi - bit_lo + 1)) - 1) << bit_lo);
+        uint8_t val = color ? mask : 0;
+        int idx = page * DISP_WIDTH;
+        for (int i = x0; i < x1; i++) {
+            if (color) fb[idx + i] |= mask;
+            else fb[idx + i] &= ~mask;
         }
+        (void)val;
     }
 }
 
@@ -200,8 +220,15 @@ void fb_draw_text_scaled(int x, int y, const char *s, int scale) {
 }
 
 esp_err_t sh1106_render(void) {
-    // Dirty check: if fb hasn't changed, don't send anything
-    if (memcmp(fb, last_fb, sizeof(fb)) == 0) {
+    /* Dirty-page check: skip pages whose framebuffer slice is unchanged */
+    bool any_dirty = false;
+    for (int p = 0; p < PAGE_COUNT; ++p) {
+        if (memcmp(&fb[p * DISP_WIDTH], &last_fb[p * DISP_WIDTH], DISP_WIDTH) != 0) {
+            any_dirty = true;
+            break;
+        }
+    }
+    if (!any_dirty) {
         return ESP_OK;
     }
 
@@ -210,17 +237,20 @@ esp_err_t sh1106_render(void) {
     }
 
     for (int p = 0; p < PAGE_COUNT; ++p) {
+        if (memcmp(&fb[p * DISP_WIDTH], &last_fb[p * DISP_WIDTH], DISP_WIDTH) == 0) {
+            continue; /* page unchanged - don't push */
+        }
         esp_err_t r = sh1106_write_page(p, &fb[p*DISP_WIDTH]);
         if (r != ESP_OK) {
             sensors_i2c_give();
             return r;
         }
     }
-    
+
     // Update last_fb
     memcpy(last_fb, fb, sizeof(fb));
     sensors_i2c_give();
-    
+
     return ESP_OK;
 }
 
@@ -239,15 +269,37 @@ static esp_err_t sh1106_write_cmd(const uint8_t *cmds, size_t len) {
     return err;
 }
 
-/* send one page (128 bytes) to SH1106. We send a 129-byte buffer: [0x40, data... ] */
+/* send one page (128 bytes) to SH1106 in a SINGLE I2C transaction.
+ * Control bytes: Co=1,D/C=0 (0x80) prefixes each single command;
+ * Co=0,D/C=1 (0x40) starts the data stream. */
 static esp_err_t sh1106_write_page(uint8_t page, const uint8_t *data128) {
-    uint8_t page_cmds[] = { (uint8_t)(0xB0 + page), 0x02, 0x10 };
-    if (sh1106_write_cmd(page_cmds, sizeof(page_cmds)) != ESP_OK) return ESP_FAIL;
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    if (!cmd) return ESP_ERR_NO_MEM;
 
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (SH1106_ADDR << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
+
+    /* Single commands: page address + column start (0x02 = col 2, SH1106 offset) */
+    uint8_t co = 0x80; /* Co=1, D/C=0: next byte is one command */
+    uint8_t page_addr = (uint8_t)(0xB0 + page);
+    uint8_t col_lo = 0x02;
+    uint8_t col_hi = 0x10;
+    i2c_master_write(cmd, &co, 1, ACK_CHECK_EN);
+    i2c_master_write(cmd, &page_addr, 1, ACK_CHECK_EN);
+    i2c_master_write(cmd, &co, 1, ACK_CHECK_EN);
+    i2c_master_write(cmd, &col_lo, 1, ACK_CHECK_EN);
+    i2c_master_write(cmd, &co, 1, ACK_CHECK_EN);
+    i2c_master_write(cmd, &col_hi, 1, ACK_CHECK_EN);
+
+    /* Data stream: Co=0, D/C=1 + 128 data bytes */
     uint8_t buf[129];
-    buf[0] = 0x40; // data control byte
+    buf[0] = 0x40;
     memcpy(&buf[1], data128, 128);
-    esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, SH1106_ADDR, buf, sizeof(buf), pdMS_TO_TICKS(I2C_TIMEOUT_MS));
+    i2c_master_write(cmd, buf, sizeof(buf), ACK_CHECK_EN);
+
+    i2c_master_stop(cmd);
+    esp_err_t err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
+    i2c_cmd_link_delete(cmd);
     return err;
 }
 

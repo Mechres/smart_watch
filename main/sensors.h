@@ -12,7 +12,13 @@
 /* Initialize sensors (AHT10/20 and ADXL345) */
 void sensors_init(void);
 
-/* Read temperature and humidity from AHT10/20 */
+/* Non-blocking temperature/humidity read:
+ * start_temp_hum() kicks off a measurement; poll_temp_hum() returns
+ * ESP_ERR_INVALID_STATE until ~80ms have elapsed, then ESP_OK with results. */
+esp_err_t sensors_start_temp_hum(void);
+esp_err_t sensors_poll_temp_hum(float *temperature, float *humidity);
+
+/* Blocking convenience wrapper (starts + waits 80ms + reads) */
 esp_err_t sensors_read_temp_hum(float *temperature, float *humidity);
 
 /* Read accelerometer data from ADXL345 */

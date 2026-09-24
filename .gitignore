@@ -1,2 +1,12 @@
 build/
 sdkconfig.old
+companion/desktop/.venv/
+companion/desktop/__pycache__/
+companion/android/.gradle/
+companion/android/local.properties
+companion/android/app/build/
+companion/android/build/
+companion/android/captures/
+*.apk
+*.aab
+*.log

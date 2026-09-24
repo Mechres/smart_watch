@@ -55,6 +55,7 @@ typedef enum {
     SETTINGS_SCREEN_TIMEOUT,
     SETTINGS_BRIGHTNESS,
     SETTINGS_TIME_SYNC,
+    SETTINGS_RESET,
     SETTINGS_REBOOT,
     SETTINGS_POWER_OFF,
     SETTINGS_BACK,
@@ -99,7 +100,7 @@ static int64_t stopwatch_elapsed_time = 0;
 
 /* Local copies of settings (loaded from settings module) */
 static int16_t motion_threshold_editable = 100;
-static int16_t screen_timeout_editable = 5;
+static int16_t screen_timeout_editable = 3;
 static int16_t brightness_editable = 128;
 
 void menu_init(void) {
@@ -121,16 +122,22 @@ bool menu_is_watch_mode(void) {
     return (current_menu == MENU_WATCH);
 }
 
-bool menu_needs_fast_refresh(void) {
+int menu_get_min_refresh_ms(void) {
     if (current_menu == MENU_STOPWATCH && stopwatch_running) {
-        return true;
+        return 100; /* 1/10 s display resolution */
     }
     if (current_menu == MENU_WATCH) {
-        return (current_watchface == WATCHFACE_TERMINAL ||
-                current_watchface == WATCHFACE_MATRIX ||
-                current_watchface == WATCHFACE_CATS);
+        switch (current_watchface) {
+            case WATCHFACE_TERMINAL:
+                return 1000; /* seconds field + 1 Hz cursor blink */
+            case WATCHFACE_MATRIX:
+            case WATCHFACE_CATS:
+                return 200;  /* animation tick */
+            default:
+                return 0;    /* static: render only on content change */
+        }
     }
-    return false;
+    return 0;
 }
 
 void menu_check_timeout(int32_t current_time_s) {
@@ -141,7 +148,7 @@ void menu_check_timeout(int32_t current_time_s) {
         }
     } else if (current_menu != MENU_WATCH && (current_time_s - menu_last_activity_s) > 10) {
         ESP_LOGI(TAG, "Menu timeout - returning to watch");
-        if (editing_mode) {
+        if (editing_mode && current_setting != SETTINGS_RESET) {
             settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
         }
         current_menu = MENU_WATCH;
@@ -283,6 +290,14 @@ static void render_settings_menu(void) {
             case SETTINGS_TIME_SYNC:
                 draw_menu_item(y_pos, "Time Sync", is_selected);
                 break;
+            case SETTINGS_RESET:
+                if (editing_mode && is_selected) {
+                    fb_fill_rect(0, y_pos, DISP_WIDTH, 10, 1);
+                    fb_draw_text_ex(2, y_pos + 1, "Reset? [OK]=Yes", 0, -1);
+                } else {
+                    draw_menu_item(y_pos, "Reset Settings", is_selected);
+                }
+                break;
             case SETTINGS_REBOOT:
                 draw_menu_item(y_pos, "Reboot", is_selected);
                 break;
@@ -416,20 +431,35 @@ static void render_notification_menu(void) {
     // Title
     fb_draw_text(0, 12, notif_title);
     
-    // Body (simple multi-line rendering)
+    // Body (multi-line rendering, wrap at word boundaries when possible)
     int y = 24;
     const char *p = notif_body;
-    char line[22]; // ~21 chars fit on 128px wide screen with 6px font
-    
+
     while (*p && y < DISP_HEIGHT) {
-        strncpy(line, p, 21);
-        line[21] = '\0';
+        /* Skip leading spaces on continuation lines */
+        while (*p == ' ') p++;
+        if (!*p) break;
+
+        size_t remaining = strlen(p);
+        size_t take = remaining > 21 ? 21 : remaining;
+
+        if (remaining > 21) {
+            /* Prefer wrapping at the last space within the window */
+            size_t ws = take;
+            while (ws > 0 && p[ws - 1] != ' ') ws--;
+            if (ws > 8) { /* only break at word if not a pathological single token */
+                take = ws;
+            }
+        }
+
+        char line[22];
+        memcpy(line, p, take);
+        line[take] = '\0';
         fb_draw_text(0, y, line);
         y += 10;
-        if (strlen(p) > 21) p += 21;
-        else break;
+        p += take;
     }
-    
+
     fb_draw_text(0, 54, "[Any Key] Close");
 }
 
@@ -661,6 +691,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 brightness_editable += 10;
                 if (brightness_editable > 255) brightness_editable = 255;
                 sh1106_set_contrast((uint8_t)brightness_editable);
+            } else if (current_setting == SETTINGS_RESET) {
+                editing_mode = false; // cancel confirm
             }
         } else if (current_menu == MENU_SETTINGS) {
             if (current_setting > 0) current_setting--;
@@ -691,6 +723,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 brightness_editable -= 10;
                 if (brightness_editable < 0) brightness_editable = 0;
                 sh1106_set_contrast((uint8_t)brightness_editable);
+            } else if (current_setting == SETTINGS_RESET) {
+                editing_mode = false; // cancel confirm
             }
         } else if (current_menu == MENU_SETTINGS) {
             if (current_setting < SETTINGS_COUNT - 1) current_setting++;
@@ -781,14 +815,27 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 fb_clear();
                 fb_draw_text(10, 30, "Powering Off...");
                 sh1106_render();
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                vTaskDelay(pdMS_TO_TICKS(300));
                 power_enter_deep_sleep();
+            } else if (current_setting == SETTINGS_RESET) {
+                // First OK enters confirm; second OK applies
+                editing_mode = true;
             } else {
                 editing_mode = true;
             }
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
-            editing_mode = false;
-            settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+            if (current_setting == SETTINGS_RESET) {
+                if (settings_reset() == ESP_OK) {
+                    settings_load(&motion_threshold_editable, &screen_timeout_editable,
+                                  (int*)&current_watchface, &brightness_editable);
+                    sh1106_set_contrast((uint8_t)brightness_editable);
+                    ESP_LOGI(TAG, "Settings restored to defaults");
+                }
+                editing_mode = false;
+            } else {
+                editing_mode = false;
+                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+            }
         } else if (current_menu == MENU_SENSOR_DATA) {
             if (current_sensor == SENSOR_BACK) {
                 current_menu = MENU_ROOT;

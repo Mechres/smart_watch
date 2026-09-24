@@ -197,29 +197,32 @@ void render_watchface_terminal(float temp, float hum, int16_t ax, int16_t ay, in
 void render_watchface_matrix(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
     fb_clear();
     char buf[64];
-    
-    // Draw random characters background
-    // Draw columns of random chars
+
+    /* Deterministic pseudo-random based on position + 200ms tick so identical
+     * frames produce identical framebuffers and the dirty check can suppress
+     * redundant I2C pushes (rand() would churn every frame). */
+    int64_t tick = esp_timer_get_time() / 200000;
+
     for (int y = 0; y < DISP_HEIGHT; y += 10) {
         for (int x = 0; x < DISP_WIDTH; x += 12) {
-             // Simple pseudo-random pattern based on time and position to avoid static noise
-             if (((x + y + timeinfo->tm_sec) / 10) % 2 == 0) { 
-                 char c = 33 + (rand() % 90); // Random printable char
+             if (((x + y + timeinfo->tm_sec) / 10) % 2 == 0) {
+                 uint32_t h = (uint32_t)(x * 73856093u) ^ (uint32_t)(y * 19349663u) ^ (uint32_t)(tick * 83492791u);
+                 char c = (char)(33 + (h % 90));
                  char str[2] = {c, 0};
                  fb_draw_text(x, y, str);
              }
         }
     }
-    
+
     // Draw box for time
     int box_w = 80;
     int box_h = 24;
     int box_x = (DISP_WIDTH - box_w) / 2;
     int box_y = (DISP_HEIGHT - box_h) / 2;
-    
+
     fb_fill_rect(box_x, box_y, box_w, box_h, 0); // Clear box (black)
     fb_draw_rect(box_x, box_y, box_w, box_h, 1); // White border
-    
+
     snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min);
     int len = strlen(buf);
     int char_width = 6 * 2;

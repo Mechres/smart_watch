@@ -4,6 +4,7 @@
 #include "wifi_manager.h"
 #include "display.h"
 #include "sensors.h"
+#include "pedometer.h"
 
 static const char *TAG = "power";
 
@@ -23,17 +24,20 @@ void power_enter_deep_sleep(void) {
     // 1. Turn off OLED display to prevent battery drain and burn-in
     sh1106_display_off();
     
-    // 2. Clear any lingering tap interrupt on ADXL345
+    // 2. Flush pending step count to NVS (steps since last periodic save)
+    pedometer_save();
+
+    // 3. Clear any lingering tap interrupt on ADXL345
     sensors_clear_tap_interrupt();
     
-    // 3. Enable wakeup on GPIO 1 (ADXL345 tap, active LOW) and GPIO 5 (OK Button, active LOW)
+    // 4. Enable wakeup on GPIO 1 (ADXL345 tap, active LOW) and GPIO 5 (OK Button, active LOW)
     uint64_t wake_mask = (1ULL << 1) | (1ULL << 5);
     esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable deep sleep GPIO wakeup: %s", esp_err_to_name(err));
     }
     
-    // 4. Enter deep sleep
+    // 5. Enter deep sleep
     esp_deep_sleep_start();
 }
 

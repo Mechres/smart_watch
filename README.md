@@ -25,27 +25,38 @@ Choose from a variety of stylish and functional watchfaces:
   - **Characteristics**:
     - **Notification** (`2480757d-4f07-9fa5-0f48-e4125a9bdab8`):
       - Properties: Read, Write, Notify.
-      - Usage: Send text to display on the watch.
-      - Format: `Title|Body` or `Title\nBody` (e.g., `Message|Hello World`).
+      - Write format: `Title|Body` or `Title\nBody` (e.g., `Message|Hello World`).
+      - **Read wire format** (explicit, not a raw struct):
+        ```
+        byte 0: flags (bit0=has_data, bit1=has_unread)
+        byte 1: title_len (0..31)
+        byte 2: body_len  (0..127)
+        bytes 3..: title bytes, then body bytes
+        ```
     - **Control** (`b31cb75e-410c-29ba-0b45-9da7834df66e`):
       - Properties: Read, Write, Notify.
-      - Usage: Send commands to control watch functions.
       - Commands:
-        - `wifi_on`: Turn WiFi on.
-        - `wifi_off`: Turn WiFi off.
-        - `screen_on`: Wake the screen.
-        - `screen_off`: Turn the screen off.
+        - `wifi_on` / `wifi_off`: Toggle WiFi.
+        - `screen_on` / `screen_off`: Toggle the display.
         - `time=<timestamp>`: Set system time (Unix epoch seconds).
         - `weather=<temp>,<code>`: Set weather (e.g., `weather=24.5,1`).
+        - `ota=<https-url>`: Download firmware from an HTTPS URL and reboot into it.
+          Progress/status is notified back as `ota_status=...` / `ota_progress=NN`.
     - **Battery** (`12345678-90ab-cdef-1234-567890abcdef`):
-      - Properties: Read, Notify.
-      - Usage: Read current battery percentage (0-100).
+      - Properties: Read, Notify. Value: battery percentage (0-100), uint8.
     - **Steps** (`fedcba98-7654-3210-fedc-ba9876543210`):
-      - Properties: Read, Notify.
-      - Usage: Read current step count.
+      - Properties: Read, Notify. Value: step count, uint32 native endian.
+  - Advertising: fast interval while the screen is active; stops after ~5 minutes
+    without a connection; restarts when the user wakes the watch.
 - **WiFi**:
-  - Connects to configured WiFi networks.
+  - Connects to configured WiFi networks (lazily initialized on first use).
   - *Note: WiFi is kept off by default to conserve power.*
+
+### 🔄 OTA Updates
+- Partition table: `nvs + otadata + phy + ota_0 + ota_1` (two 1984 KB app slots).
+- Trigger via BLE control command: `ota=https://example.com/smart_watch.bin`
+- Uses `esp_https_ota` with the built-in certificate bundle (HTTPS required).
+- On success the watch reboots into the new image automatically.
 
 ### ⚙️ System
 - **Settings Menu**:
@@ -124,23 +135,30 @@ Choose from a variety of stylish and functional watchfaces:
   - Press **OK** on the watchface to enter the Main Menu.
   - **Wake Screen**: Lift wrist (Motion) or press any button.
 
+### 📱 Companion Apps
+
+See [`companion/`](companion/) — protocol in [`companion/PROTOCOL.md`](companion/PROTOCOL.md).
+
+| App | Path | Stack |
+|-----|------|-------|
+| Desktop test tool | `companion/desktop/` | Python + bleak CLI |
+| Android (full suite) | `companion/android/` | Kotlin + Jetpack Compose |
+
+Android features: scan/connect, battery + steps, send notifications, time sync, weather push, screen/wifi controls, OTA with progress, find-phone ring, music media keys, event log.
+
 ## Project Structure
 
 ```
 smart_watch/
-├── main/
-│   ├── main.c           # Entry point, initialization, and main loop
-│   ├── menu.c           # Menu system logic and rendering
-│   ├── watchfaces.c     # Implementation of various watchfaces
-│   ├── display.c        # SH1106 OLED driver
-│   ├── sensors.c        # Sensor drivers (ADXL345, AHT10)
-│   ├── ble_manager.c    # BLE GAP/GATT handling
-│   ├── wifi_manager.c   # WiFi connection management
-│   ├── weather.c        # Weather data storage (pushed via BLE)
-│   ├── battery.c        # ADC reading for battery level
-│   └── ...
-├── CMakeLists.txt       # Project build configuration
-└── README.md            # This file
+├── main/                 # Firmware sources
+├── companion/
+│   ├── PROTOCOL.md       # BLE wire protocol
+│   ├── desktop/          # Python bleak CLI
+│   └── android/          # Native Android app
+├── CMakeLists.txt
+├── partitions.csv
+├── PLAN.md               # Optimization plan (not for commit)
+└── README.md
 ```
 
 ## License

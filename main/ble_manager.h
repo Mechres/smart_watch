@@ -23,11 +23,13 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
                            ble_control_callback_t control_cb);
 
 bool ble_manager_get_last_notification(ble_notification_t *out, bool clear_unread);
-bool ble_manager_has_unread_notification(void);
-void ble_manager_mark_notifications_read(void);
 bool ble_manager_is_connected(void);
 bool ble_manager_is_active(void);
 esp_err_t ble_manager_send_command(const char *command);
+
+/* Periodic housekeeping: stop advertising after idle timeout; restart on user activity.
+ * Call from main_task. user_active = screen on, recent button/gesture, etc. */
+void ble_manager_housekeeping(bool user_active);
 
 esp_err_t ble_manager_update_battery(uint8_t level);
 esp_err_t ble_manager_update_steps(uint32_t steps);

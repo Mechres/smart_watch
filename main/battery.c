@@ -83,7 +83,7 @@ void battery_init(void) {
         adc1_cali_handle = NULL;
     }
     
-    ESP_LOGI(TAG, "Battery ADC initialized on GPIO4 (Ratio=1.66)");
+    ESP_LOGI(TAG, "Battery ADC initialized on GPIO4 (Ratio=2.02)");
 }
 
 int battery_get_voltage_mv(void) {
@@ -135,10 +135,3 @@ int battery_mv_to_percentage(int mv) {
     return 0;
 }
 
-int battery_get_percentage(void) {
-    int mv = (int)s_smoothed_voltage;
-    if (mv <= 0) {
-        mv = battery_get_voltage_mv();
-    }
-    return battery_mv_to_percentage(mv);
-}

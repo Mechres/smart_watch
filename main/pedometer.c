@@ -60,16 +60,16 @@ void pedometer_init(void) {
 }
 
 void pedometer_process(int16_t ax, int16_t ay, int16_t az) {
-    // Calculate magnitude (cast to float to prevent int32_t overflow)
-    float mag = sqrtf((float)ax * ax + (float)ay * ay + (float)az * az);
-    
+    // Magnitude squared (cast to float to prevent int32_t overflow)
+    float mag_sq = (float)ax * ax + (float)ay * ay + (float)az * az;
+    float mag = sqrtf(mag_sq);
+
     // Low-pass filter for gravity estimation (slowly track baseline)
     avg_mag = avg_mag * 0.95f + mag * 0.05f;
-    
-    // Step detection
-    // We look for a significant deviation from the average (impact)
-    // This is a very simple peak detection.
-    if (mag > avg_mag + STEP_THRESHOLD) {
+
+    // Step detection via squared comparison (avoids one add+compare on mag domain)
+    float thr = avg_mag + STEP_THRESHOLD;
+    if (mag_sq > thr * thr) {
         int64_t now = esp_timer_get_time() / 1000;
         if (now - last_step_time > MIN_STEP_INTERVAL_MS) {
             step_count++;

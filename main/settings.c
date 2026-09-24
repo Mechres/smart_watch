@@ -28,7 +28,7 @@ esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int 
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGI(TAG, "NVS namespace not found; using defaults");
             *motion_threshold = 100;
-            *screen_timeout = 5;
+            *screen_timeout = 3;
             *watchface = 0; // WATCHFACE_DIGITAL
             *brightness = 128; // Default brightness
             return ESP_OK;
@@ -49,9 +49,9 @@ esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int 
     err = nvs_get_i16(handle, "screen_to", screen_timeout);
     if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "Error reading screen_timeout: %s", esp_err_to_name(err));
-        *screen_timeout = 5;
+        *screen_timeout = 3;
     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
-        *screen_timeout = 5;
+        *screen_timeout = 3;
     }
 
     err = nvs_get_i32(handle, "watchface", (int32_t*)watchface);
@@ -122,5 +122,31 @@ esp_err_t settings_save(int16_t motion_threshold, int16_t screen_timeout, int wa
     nvs_close(handle);
     ESP_LOGI(TAG, "Saved settings: motion_thr=%d, screen_to=%d, watchface=%d, brightness=%d", 
              motion_threshold, screen_timeout, watchface, brightness);
+    return ESP_OK;
+}
+
+esp_err_t settings_reset(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error opening NVS for reset: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_erase_all(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error erasing settings: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error committing reset: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Settings reset to defaults");
     return ESP_OK;
 }

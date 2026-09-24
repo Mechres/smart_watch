@@ -15,16 +15,17 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "esp_timer.h"
 
 
 
 static const char *TAG = "BLE";
 
+/* Stop advertising after this long without a connection (5 minutes) */
+#define BLE_ADV_IDLE_TIMEOUT_US  (5 * 60 * 1000000LL)
+
 static ble_notification_callback_t s_notification_cb = NULL;
 static ble_control_callback_t s_control_cb = NULL;
-
-static uint8_t notification_value_buf[160];
-static uint8_t control_value_buf[48];
 
 static SemaphoreHandle_t s_notif_mutex;
 static ble_notification_t s_last_notification = {0};
@@ -41,6 +42,21 @@ static uint8_t s_addr_type;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool s_ble_connected = false;
 static bool s_ble_advertising = false;
+static int64_t s_adv_started_us = 0;
+static bool s_adv_intentionally_stopped = false;
+
+/* Whether the central has enabled notifications (CCCD) on each characteristic.
+ * Notifying a handle before the client has subscribed - which can happen the
+ * instant a connection completes, since the pedometer task calls
+ * ble_manager_update_steps() on every tick - sends an unsolicited ATT PDU
+ * that lands in the middle of the client's service-discovery transaction.
+ * Some Android stacks silently corrupt discovery when that happens: it
+ * completes with GATT_SUCCESS but an empty service list. Gate all our
+ * background notifications on real subscription state to avoid that. */
+static bool s_notif_subscribed = false;
+static bool s_control_subscribed = false;
+static bool s_battery_subscribed = false;
+static bool s_steps_subscribed = false;
 
 static const ble_uuid128_t SMARTWATCH_SERVICE_UUID =
     BLE_UUID128_INIT(0x8d, 0x17, 0x6a, 0x59, 0x10, 0x6f, 0x4b, 0x16,
@@ -77,8 +93,8 @@ static void store_notification(const char *title, const char *body) {
     }
 
     memset(&s_last_notification, 0, sizeof(s_last_notification));
-    strncpy(s_last_notification.title, title ? title : "", sizeof(s_last_notification.title) - 1);
-    strncpy(s_last_notification.body, body ? body : "", sizeof(s_last_notification.body) - 1);
+    snprintf(s_last_notification.title, sizeof(s_last_notification.title), "%s", title ? title : "");
+    snprintf(s_last_notification.body, sizeof(s_last_notification.body), "%s", body ? body : "");
     s_last_notification.has_data = true;
     s_last_notification.has_unread = true;
 
@@ -116,7 +132,7 @@ static void handle_notification_write(const uint8_t *data, uint16_t len) {
     }
 
     store_notification(title, body);
-    ESP_LOGI(TAG, "Notification received: title='%s' body='%s'", title, body);
+    ESP_LOGD(TAG, "Notification received: title='%s' body='%s'", title, body);
 }
 
 static void handle_control_write(const uint8_t *data, uint16_t len) {
@@ -127,7 +143,7 @@ static void handle_control_write(const uint8_t *data, uint16_t len) {
     memcpy(s_last_command, data, len);
     s_last_command[len] = '\0';
 
-    ESP_LOGI(TAG, "Control command received: %s", s_last_command);
+    ESP_LOGD(TAG, "Control command received: %s", s_last_command);
     if (s_control_cb) {
         s_control_cb(s_last_command);
     }
@@ -166,7 +182,7 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             return BLE_ATT_ERR_UNLIKELY;
         }
 
-        ESP_LOGI(TAG, "GATT Write (attr=%u len=%u): '%.*s'", attr_handle, data_len, data_len, buffer);
+        ESP_LOGD(TAG, "GATT Write (attr=%u len=%u): '%.*s'", attr_handle, data_len, data_len, buffer);
 
         if (attr_handle == s_notification_handle) {
             handle_notification_write(buffer, data_len);
@@ -185,28 +201,42 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
     }
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        ESP_LOGI(TAG, "  ▶▶▶ READ OPERATION ◀◀◀");
-        
+        ESP_LOGD(TAG, "GATT read attr=%u", attr_handle);
+
         if (attr_handle == s_notification_handle) {
-            ESP_LOGI(TAG, "  Reading notification characteristic");
-            int rc = os_mbuf_append(ctxt->om, &s_last_notification, sizeof(s_last_notification));
+            /* Explicit wire format (NOT a raw struct — no padding/endianness issues):
+             *   byte 0: flags (bit0=has_data, bit1=has_unread)
+             *   byte 1: title_len (0..31)
+             *   byte 2: body_len  (0..127)
+             *   bytes 3..: title bytes, then body bytes
+             * CRITICAL: companion app must parse this format. */
+            if (s_notif_mutex) xSemaphoreTake(s_notif_mutex, portMAX_DELAY);
+            uint8_t buf[3 + sizeof(s_last_notification.title) + sizeof(s_last_notification.body)];
+            size_t title_len = strnlen(s_last_notification.title, sizeof(s_last_notification.title));
+            size_t body_len = strnlen(s_last_notification.body, sizeof(s_last_notification.body));
+            buf[0] = (uint8_t)((s_last_notification.has_data ? 0x01 : 0x00) |
+                               (s_last_notification.has_unread ? 0x02 : 0x00));
+            buf[1] = (uint8_t)title_len;
+            buf[2] = (uint8_t)body_len;
+            memcpy(&buf[3], s_last_notification.title, title_len);
+            memcpy(&buf[3 + title_len], s_last_notification.body, body_len);
+            size_t total = 3 + title_len + body_len;
+            if (s_notif_mutex) xSemaphoreGive(s_notif_mutex);
+            int rc = os_mbuf_append(ctxt->om, buf, total);
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
         if (attr_handle == s_control_handle) {
-            ESP_LOGI(TAG, "  Reading control characteristic");
             int rc = os_mbuf_append(ctxt->om, s_last_command, strlen(s_last_command));
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
         if (attr_handle == s_battery_handle) {
-            ESP_LOGI(TAG, "  Reading battery characteristic");
             int rc = os_mbuf_append(ctxt->om, &s_battery_val, sizeof(s_battery_val));
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
         if (attr_handle == s_steps_handle) {
-            ESP_LOGI(TAG, "  Reading steps characteristic");
             int rc = os_mbuf_append(ctxt->om, &s_steps_val, sizeof(s_steps_val));
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
@@ -243,49 +273,50 @@ static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg)
 }
 
 
+static const struct ble_gatt_chr_def gatt_svr_chrs[] = {
+    {
+        .uuid = &NOTIFICATION_CHAR_UUID.u,
+        .access_cb = gatt_svr_chr_access,
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+        .val_handle = &s_notification_handle,
+    },
+    {
+        .uuid = &CONTROL_CHAR_UUID.u,
+        .access_cb = gatt_svr_chr_access,
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+        .val_handle = &s_control_handle,
+    },
+    {
+        .uuid = &BATTERY_CHAR_UUID.u,
+        .access_cb = gatt_svr_chr_access,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+        .val_handle = &s_battery_handle,
+    },
+    {
+        .uuid = &STEPS_CHAR_UUID.u,
+        .access_cb = gatt_svr_chr_access,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+        .val_handle = &s_steps_handle,
+    },
+    {0},
+};
+
 static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
         .uuid = &SMARTWATCH_SERVICE_UUID.u,
-        .characteristics = (struct ble_gatt_chr_def[]){
-            {
-                .uuid = &NOTIFICATION_CHAR_UUID.u,
-                .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &s_notification_handle,
-            },
-            {
-                .uuid = &CONTROL_CHAR_UUID.u,
-                .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &s_control_handle,
-            },
-            {
-                .uuid = &BATTERY_CHAR_UUID.u,
-                .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &s_battery_handle,
-            },
-            {
-                .uuid = &STEPS_CHAR_UUID.u,
-                .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &s_steps_handle,
-            },
-            {0},
-        },
+        .characteristics = gatt_svr_chrs,
     },
     {0},
 };
+
 static int ble_gap_event(struct ble_gap_event *event, void *arg) {
-    ESP_LOGI(TAG, "╔═══════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   BLE GAP EVENT: type=%d          ║", event->type);
-    ESP_LOGI(TAG, "╚═══════════════════════════════════╝");
-    
+    ESP_LOGD(TAG, "GAP event type=%d", event->type);
+
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
             if (event->connect.status == 0) {
-                ESP_LOGI(TAG, "BLE connected");
+                ESP_LOGW(TAG, "BLE connected");
                 s_ble_connected = true;
                 s_conn_handle = event->connect.conn_handle;
                 s_ble_advertising = false;
@@ -295,31 +326,49 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             }
             break;
         case BLE_GAP_EVENT_DISCONNECT:
-            ESP_LOGI(TAG, "BLE disconnected; reason=%d", event->disconnect.reason);
+            ESP_LOGW(TAG, "BLE disconnected; reason=%d", event->disconnect.reason);
             s_ble_connected = false;
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            s_adv_intentionally_stopped = false;
+            s_notif_subscribed = false;
+            s_control_subscribed = false;
+            s_battery_subscribed = false;
+            s_steps_subscribed = false;
             ble_app_advertise();
             break;
         case BLE_GAP_EVENT_ADV_COMPLETE:
-            ESP_LOGI(TAG, "Advertisement complete; restarting");
             s_ble_advertising = false;
-            ble_app_advertise();
+            if (!s_adv_intentionally_stopped) {
+                ESP_LOGI(TAG, "Advertisement complete; restarting");
+                ble_app_advertise();
+            }
             break;
-        case BLE_GAP_EVENT_SUBSCRIBE:
-            ESP_LOGI(TAG, "Subscription event; attr_handle=%u reason=%d prevn=%d curn=%d previ=%d curi=%d",
+        case BLE_GAP_EVENT_SUBSCRIBE: {
+            bool now_on = event->subscribe.cur_notify || event->subscribe.cur_indicate;
+            ESP_LOGD(TAG, "Subscription event; attr_handle=%u reason=%d prevn=%d curn=%d previ=%d curi=%d",
                      event->subscribe.attr_handle, event->subscribe.reason, event->subscribe.prev_notify,
                      event->subscribe.cur_notify, event->subscribe.prev_indicate, event->subscribe.cur_indicate);
+            if (event->subscribe.attr_handle == s_notification_handle) {
+                s_notif_subscribed = now_on;
+            } else if (event->subscribe.attr_handle == s_control_handle) {
+                s_control_subscribed = now_on;
+            } else if (event->subscribe.attr_handle == s_battery_handle) {
+                s_battery_subscribed = now_on;
+            } else if (event->subscribe.attr_handle == s_steps_handle) {
+                s_steps_subscribed = now_on;
+            }
             break;
+        }
         case BLE_GAP_EVENT_MTU:
-            ESP_LOGI(TAG, "MTU update event; conn_handle=%d cid=%d mtu=%d",
+            ESP_LOGD(TAG, "MTU update event; conn_handle=%d cid=%d mtu=%d",
                      event->mtu.conn_handle, event->mtu.channel_id, event->mtu.value);
             break;
         case BLE_GAP_EVENT_NOTIFY_TX:
-            ESP_LOGI(TAG, "Notify TX complete; status=%d conn_handle=%d attr_handle=%d",
+            ESP_LOGD(TAG, "Notify TX complete; status=%d conn_handle=%d attr_handle=%d",
                      event->notify_tx.status, event->notify_tx.conn_handle, event->notify_tx.attr_handle);
             break;
         default:
-            ESP_LOGI(TAG, "Unhandled GAP event: %d", event->type);
+            ESP_LOGD(TAG, "Unhandled GAP event: %d", event->type);
             break;
     }
     return 0;
@@ -382,7 +431,39 @@ static void ble_app_advertise(void) {
         ESP_LOGE(TAG, "Failed to start advertising; rc=%d", rc);
     } else {
         s_ble_advertising = true;
+        s_adv_intentionally_stopped = false;
+        s_adv_started_us = esp_timer_get_time();
         ESP_LOGI(TAG, "Advertising started (addr_type=%u)", s_addr_type);
+    }
+}
+
+void ble_manager_housekeeping(bool user_active) {
+    if (s_ble_connected) {
+        return;
+    }
+
+    if (!s_ble_advertising) {
+        if (user_active && s_adv_intentionally_stopped) {
+            ESP_LOGI(TAG, "User active - restarting advertising");
+            ble_app_advertise();
+        }
+        return;
+    }
+
+    /* Advertising, not connected */
+    if (user_active) {
+        /* Extend the discoverable window while the user is interacting */
+        s_adv_started_us = esp_timer_get_time();
+        return;
+    }
+
+    if (s_adv_started_us > 0 &&
+        (esp_timer_get_time() - s_adv_started_us) > BLE_ADV_IDLE_TIMEOUT_US) {
+        ESP_LOGI(TAG, "Idle advertising timeout - stopping advertisement");
+        s_adv_intentionally_stopped = true;
+        ble_gap_adv_stop();
+        s_ble_advertising = false;
+        s_adv_started_us = 0;
     }
 }
 
@@ -393,14 +474,15 @@ static void ble_on_sync(void) {
         return;
     }
 
-    rc = ble_gatts_start();
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to start GATT services; rc=%d", rc);
-        return;
-    }
-
-    ESP_LOGI(TAG, "GATT services started; notification handle=%u control handle=%u", s_notification_handle,
-             s_control_handle);
+    /* NOTE: do NOT call ble_gatts_start() here. The NimBLE host calls it
+     * internally from ble_hs_start() before invoking the sync callback
+     * (ble_hs.c). Calling it a second time wipes the just-registered
+     * attribute list (ble_att_svr_reset) while ble_gatts_svc_defs has
+     * already been freed, so zero services get re-registered — the server
+     * then answers every Read-By-Group-Type with ATTRIBUTE_NOT_FOUND and
+     * discovery comes back empty. It still returns 0, which masked this. */
+    ESP_LOGW(TAG, "BLE synced; notification handle=%u control handle=%u",
+             s_notification_handle, s_control_handle);
 
     ble_app_advertise();
 }
@@ -434,19 +516,23 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
     }
 
     // Security Configuration
+    // bonding=1 forces pairing on first encrypted access; leave off for open GATT
+    // (phone was previously bonded with mismatched keys → empty service list).
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
-    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_bonding = 0;
     ble_hs_cfg.sm_mitm = 0;
     ble_hs_cfg.sm_sc = 0; // Legacy pairing
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_our_key_dist = 0;
+    ble_hs_cfg.sm_their_key_dist = 0;
 
     ble_svc_gap_device_name_set("Hikaboshi");
     ble_svc_gap_init();
     ble_svc_gatt_init();
 
-    ble_gatts_count_cfg(gatt_svr_svcs);
+    int count = ble_gatts_count_cfg(gatt_svr_svcs);
+    ESP_LOGW(TAG, "ble_gatts_count_cfg=%d", count);
     ret = ble_gatts_add_svcs(gatt_svr_svcs);
+    ESP_LOGW(TAG, "ble_gatts_add_svcs=%d", ret);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add GATT services: %s", esp_err_to_name(ret));
         return ret;
@@ -479,28 +565,6 @@ bool ble_manager_get_last_notification(ble_notification_t *out, bool clear_unrea
     return out->has_data;
 }
 
-bool ble_manager_has_unread_notification(void) {
-    bool unread = false;
-    if (s_notif_mutex) {
-        xSemaphoreTake(s_notif_mutex, portMAX_DELAY);
-    }
-    unread = s_last_notification.has_unread;
-    if (s_notif_mutex) {
-        xSemaphoreGive(s_notif_mutex);
-    }
-    return unread;
-}
-
-void ble_manager_mark_notifications_read(void) {
-    if (s_notif_mutex) {
-        xSemaphoreTake(s_notif_mutex, portMAX_DELAY);
-    }
-    s_last_notification.has_unread = false;
-    if (s_notif_mutex) {
-        xSemaphoreGive(s_notif_mutex);
-    }
-}
-
 bool ble_manager_is_connected(void) {
     return s_ble_connected;
 }
@@ -517,6 +581,11 @@ esp_err_t ble_manager_send_command(const char *command) {
 
     if (!command) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!s_control_subscribed) {
+        ESP_LOGD(TAG, "Skip command notify: client not subscribed yet");
+        return ESP_ERR_INVALID_STATE;
     }
 
     uint16_t len = strlen(command);
@@ -542,8 +611,8 @@ esp_err_t ble_manager_update_battery(uint8_t level) {
     }
     
     s_battery_val = level;
-    
-    if (s_ble_connected) {
+
+    if (s_ble_connected && s_battery_subscribed) {
         struct os_mbuf *om = ble_hs_mbuf_from_flat(&s_battery_val, sizeof(s_battery_val));
         if (!om) {
             return ESP_ERR_NO_MEM;
@@ -560,7 +629,7 @@ esp_err_t ble_manager_update_steps(uint32_t steps) {
 
     s_steps_val = steps;
 
-    if (s_ble_connected) {
+    if (s_ble_connected && s_steps_subscribed) {
         struct os_mbuf *om = ble_hs_mbuf_from_flat(&s_steps_val, sizeof(s_steps_val));
         if (!om) {
             return ESP_ERR_NO_MEM;

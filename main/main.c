@@ -5,6 +5,7 @@
 #include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -16,7 +17,6 @@
 
 #include "display.h"
 #include "watchfaces.h"
-#include "settings.h"
 #include "power.h"
 #include "input.h"
 #include "sensors.h"
@@ -27,6 +27,7 @@
 #include "pedometer.h"
 #include "weather.h"
 #include "ble_manager.h"
+#include "ota_updater.h"
 
 static const char *TAG = "SmartWatch";
 
@@ -37,7 +38,6 @@ static const char *TAG = "SmartWatch";
 #define I2C_MASTER_FREQ_HZ          400000
 #define I2C_MASTER_TX_BUF_DISABLE   0
 #define I2C_MASTER_RX_BUF_DISABLE   0
-#define I2C_TIMEOUT_MS              1000
 
 /* ---------- low-level I2C helpers ---------- */
 static esp_err_t i2c_master_init(void) {
@@ -54,30 +54,56 @@ static esp_err_t i2c_master_init(void) {
     return i2c_driver_install(I2C_MASTER_NUM, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
-/* probe address (start + write address only) */
-static esp_err_t i2c_probe_addr(uint8_t addr) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (!cmd) return ESP_ERR_NO_MEM;
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr<<1) | I2C_MASTER_WRITE, 0x1);
-    i2c_master_stop(cmd);
-    esp_err_t err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-    return err;
-}
-
 /* Motion and gesture-based screen control */
 static bool screen_on = true;
 static int32_t last_motion_time_s = 0;
 
+/* ---------- BLE event queue (NimBLE task → main_task) ----------
+ * BLE callbacks run on the NimBLE host task. Shared UI state (screen_on,
+ * menu, weather) must only be touched from main_task, so callbacks enqueue
+ * copies of the payloads and main_task drains them each loop. */
+typedef enum {
+    BLE_EVT_NOTIFICATION = 0,
+    BLE_EVT_COMMAND,
+} ble_evt_type_t;
+
+typedef struct {
+    ble_evt_type_t type;
+    char a[160]; /* notification title or command string */
+    char b[160]; /* notification body (unused for commands) */
+} ble_evt_t;
+
+static QueueHandle_t s_ble_evt_queue = NULL;
+
+static bool ble_evt_enqueue(ble_evt_type_t type, const char *a, const char *b) {
+    if (!s_ble_evt_queue) return false;
+    ble_evt_t evt = {0};
+    evt.type = type;
+    snprintf(evt.a, sizeof(evt.a), "%s", a ? a : "");
+    if (b) {
+        snprintf(evt.b, sizeof(evt.b), "%s", b);
+    }
+    return xQueueSend(s_ble_evt_queue, &evt, 0) == pdTRUE;
+}
+
 /* Update screen state based on wrist tilt gesture, viewing position, and timeout */
 static void update_screen_state(int32_t current_time_s) {
     bool in_menu = !menu_is_watch_mode();
-    
+    static bool was_viewing = false;
+    bool viewing = gesture_is_in_viewing_position();
+
+    /* Debounced viewing-edge timeout reset: only when the user deliberately
+     * raises the watch into view after it was NOT in view (gesture.c debounces
+     * s_is_currently_viewing, so desk/typing jitter does not re-arm the timer). */
+    if (screen_on && viewing && !was_viewing) {
+        last_motion_time_s = current_time_s;
+    }
+    was_viewing = viewing;
+
     if (!screen_on) {
         // Screen is OFF: check for wrist-tilt raise-to-wake gesture
         if (gesture_has_raised_to_wake()) {
-            ESP_LOGI(TAG, "Wrist raised to face - turning screen ON");
+            ESP_LOGD(TAG, "Wrist raised to face - turning screen ON");
             sh1106_display_on();
             screen_on = true;
             gesture_notify_screen_state(true);
@@ -87,12 +113,12 @@ static void update_screen_state(int32_t current_time_s) {
         if (!in_menu) {
             // In watch mode: check for lower-to-sleep gesture or timeout
             if (gesture_should_lower_to_sleep()) {
-                ESP_LOGI(TAG, "Wrist lowered - turning screen OFF immediately");
+                ESP_LOGD(TAG, "Wrist lowered - turning screen OFF immediately");
                 sh1106_display_off();
                 screen_on = false;
                 gesture_notify_screen_state(false);
             } else if ((current_time_s - last_motion_time_s) >= menu_get_screen_timeout()) {
-                ESP_LOGI(TAG, "Screen timeout (%d s) - turning screen OFF", menu_get_screen_timeout());
+                ESP_LOGD(TAG, "Screen timeout (%d s) - turning screen OFF", menu_get_screen_timeout());
                 sh1106_display_off();
                 screen_on = false;
                 gesture_notify_screen_state(false);
@@ -101,13 +127,26 @@ static void update_screen_state(int32_t current_time_s) {
     }
 }
 
+/* NimBLE host-task callbacks: copy payload and hand off to main_task */
 static void handle_ble_notification(const char *title, const char *body) {
+    if (!ble_evt_enqueue(BLE_EVT_NOTIFICATION, title, body)) {
+        ESP_LOGW(TAG, "BLE notification dropped (queue full)");
+    }
+}
+
+static void handle_ble_command(const char *command) {
+    if (!command) return;
+    if (!ble_evt_enqueue(BLE_EVT_COMMAND, command, NULL)) {
+        ESP_LOGW(TAG, "BLE command dropped (queue full)");
+    }
+}
+
+/* Process a notification on main_task: show it and wake the screen */
+static void process_ble_notification(const char *title, const char *body) {
     ESP_LOGI(TAG, "BLE notification: %s | %s", title ? title : "", body ? body : "");
 
-    // Show notification on screen
     menu_show_notification(title, body);
 
-    // Refresh screen and activity timer so alerts are visible
     int32_t now_s = (int32_t)(esp_timer_get_time() / 1000000);
     last_motion_time_s = now_s;
     if (!screen_on) {
@@ -117,8 +156,9 @@ static void handle_ble_notification(const char *title, const char *body) {
     }
 }
 
-static void handle_ble_command(const char *command) {
-    if (!command) return;
+/* Process a control command on main_task */
+static void process_ble_command(const char *command) {
+    if (!command || !command[0]) return;
 
     if (strcmp(command, "wifi_on") == 0) {
         wifi_start();
@@ -156,21 +196,37 @@ static void handle_ble_command(const char *command) {
             if (!screen_on) {
                 sh1106_display_on();
                 screen_on = true;
+                gesture_notify_screen_state(true);
             }
             last_motion_time_s = (int32_t)(esp_timer_get_time() / 1000000);
         } else {
             ESP_LOGW(TAG, "Invalid weather command format");
         }
+    } else if (strncmp(command, "ota=", 4) == 0) {
+        ota_updater_request(command + 4);
     }
     ESP_LOGI(TAG, "BLE control command handled: %s", command);
+}
+
+/* Drain pending BLE events (called from main_task) */
+static void process_ble_events(void) {
+    ble_evt_t evt;
+    while (xQueueReceive(s_ble_evt_queue, &evt, 0) == pdTRUE) {
+        switch (evt.type) {
+            case BLE_EVT_NOTIFICATION:
+                process_ble_notification(evt.a, evt.b);
+                break;
+            case BLE_EVT_COMMAND:
+                process_ble_command(evt.a);
+                break;
+        }
+    }
 }
 
 /* ---------- Main task: sensors + display + time ---------- */
 static void main_task(void *arg) {
     ESP_LOGI(TAG, "main_task starting: init sensors & display");
 
-    // Initialize settings from NVS (also done in menu_init, but good to ensure)
-    settings_init();
     menu_init();
 
     sensors_init();
@@ -179,13 +235,18 @@ static void main_task(void *arg) {
     pedometer_load();
     pedometer_start_task();
     
-    // Configure GPIO 1 for tap interrupt
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 1; // Pull up for active-low INT
-    gpio_config(&io_conf);
+    // Configure GPIO 1 for tap interrupt (deep-sleep wake pin)
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << 1),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_INPUT,
+        .pull_down_en = 0,
+        .pull_up_en = 1, // Pull up for active-low INT
+    };
+    esp_err_t gpio_err = gpio_config(&io_conf);
+    if (gpio_err != ESP_OK) {
+        ESP_LOGW(TAG, "GPIO1 tap-wake config failed: %s", esp_err_to_name(gpio_err));
+    }
     
     // Configure ADXL345 for tap wakeup
     sensors_config_tap_wakeup();
@@ -217,6 +278,9 @@ static void main_task(void *arg) {
 
     // main loop: adaptive polling based on power mode
     while (1) {
+        // Drain BLE events queued from the NimBLE host task
+        process_ble_events();
+
         // get current time
         time_t now;
         time(&now);
@@ -241,12 +305,14 @@ static void main_task(void *arg) {
         static float cached_temp = 25.0f;
         static float cached_hum = 50.0f;
         static int32_t last_th_read_s = -100;
+        static int32_t th_pending_since_s = -1;
         static int cached_batt_mv = 3800;
         static int cached_batt_pct = 50;
         static int32_t last_batt_read_s = -100;
 
-        // Periodic battery reading (every 5 seconds)
-        if (current_mono_s - last_batt_read_s >= 5 || last_batt_read_s < 0) {
+        // Periodic battery reading: 5 s while active, 30 s otherwise
+        int32_t batt_interval_s = (mode == POWER_ACTIVE && screen_on) ? 5 : 30;
+        if (current_mono_s - last_batt_read_s >= batt_interval_s || last_batt_read_s < 0) {
             cached_batt_mv = battery_get_voltage_mv();
             cached_batt_pct = battery_mv_to_percentage(cached_batt_mv);
             last_batt_read_s = current_mono_s;
@@ -255,17 +321,33 @@ static void main_task(void *arg) {
         int batt_mv = cached_batt_mv;
         int batt_pct = cached_batt_pct;
 
-        // Update BLE characteristics
-        ble_manager_update_steps((uint32_t)pedometer_get_steps());
+        // Update BLE characteristics only while connected
+        if (ble_manager_is_connected()) {
+            ble_manager_update_steps((uint32_t)pedometer_get_steps());
+        }
 
         int16_t ax = 0, ay = 0, az = 0;
         if (mode != POWER_DEEP_SLEEP) {
-            // Read temperature & humidity periodically (every 20s) to eliminate the 80ms blocking delay on each loop
-            if (current_mono_s - last_th_read_s >= 20 || last_th_read_s < 0) {
+            // Non-blocking AHT10: kick a measurement every 20s, collect >=80ms later
+            if (th_pending_since_s < 0 && (current_mono_s - last_th_read_s >= 20 || last_th_read_s < 0)) {
+                if (sensors_start_temp_hum() == ESP_OK) {
+                    th_pending_since_s = current_mono_s;
+                } else {
+                    last_th_read_s = current_mono_s; /* retry next interval */
+                }
+            } else if (th_pending_since_s >= 0 && (current_mono_s - th_pending_since_s) >= 1) {
                 float t = 0.0f, h = 0.0f;
-                if (sensors_read_temp_hum(&t, &h) == ESP_OK) {
+                esp_err_t th_err = sensors_poll_temp_hum(&t, &h);
+                if (th_err == ESP_OK) {
                     cached_temp = t;
                     cached_hum = h;
+                    th_pending_since_s = -1;
+                    last_th_read_s = current_mono_s;
+                } else if (th_err != ESP_ERR_INVALID_STATE) {
+                    th_pending_since_s = -1;
+                    last_th_read_s = current_mono_s;
+                } else if ((current_mono_s - th_pending_since_s) > 2) {
+                    th_pending_since_s = -1; /* timed out waiting for conversion */
                     last_th_read_s = current_mono_s;
                 }
             }
@@ -280,6 +362,9 @@ static void main_task(void *arg) {
             update_screen_state(current_mono_s);
         }
 
+        // BLE advertising housekeeping: stop after idle timeout, restart on activity
+        ble_manager_housekeeping(screen_on);
+
         // Handle event-driven button inputs from queue
         button_event_t btn_event;
         bool button_activity = false;
@@ -290,7 +375,7 @@ static void main_task(void *arg) {
             last_motion_time_s = current_mono_s;
             // Wake screen if it's off
             if (!screen_on) {
-                ESP_LOGI(TAG, "Button pressed - waking screen");
+            ESP_LOGD(TAG, "Button pressed - waking screen");
                 sh1106_display_on();
                 screen_on = true;
                 gesture_notify_screen_state(true);
@@ -312,6 +397,8 @@ static void main_task(void *arg) {
         static int last_rendered_batt = -1;
         static int last_rendered_temp = -100;
         static bool last_screen_on = false;
+        static int64_t last_fast_render_us = 0;
+        int min_refresh_ms = menu_get_min_refresh_ms();
 
         if (screen_on) {
             bool needs_render = false;
@@ -320,13 +407,18 @@ static void main_task(void *arg) {
                 // Screen just turned on: force render immediately
                 needs_render = true;
             } else if (!menu_is_watch_mode()) {
-                // In menu: render on button events or continuous refresh (stopwatch)
-                if (button_activity || menu_needs_fast_refresh()) {
+                // In menu: render on button events or throttled continuous refresh (stopwatch)
+                if (button_activity) {
+                    needs_render = true;
+                } else if (min_refresh_ms > 0 &&
+                           (current_mono_us - last_fast_render_us) >= (int64_t)min_refresh_ms * 1000) {
                     needs_render = true;
                 }
-            } else if (menu_needs_fast_refresh()) {
-                // Animated watchface (Terminal, Cats, Matrix): continuous refresh
-                needs_render = true;
+            } else if (min_refresh_ms > 0) {
+                // Animated watchface: continuous but throttled refresh
+                if ((current_mono_us - last_fast_render_us) >= (int64_t)min_refresh_ms * 1000) {
+                    needs_render = true;
+                }
             } else {
                 // Static watchface: render on minute change, step change, battery change, or button press
                 int cur_steps = pedometer_get_steps();
@@ -349,6 +441,7 @@ static void main_task(void *arg) {
                 last_rendered_steps = pedometer_get_steps();
                 last_rendered_batt = batt_pct;
                 last_rendered_temp = (int)temp;
+                last_fast_render_us = current_mono_us;
             }
         }
         last_screen_on = screen_on;
@@ -374,16 +467,21 @@ void app_main(void) {
         nvs_flash_init();
     }
 
-    srand(time(NULL));
-
     // Set timezone to UTC+3 (Istanbul)
     setenv("TZ", "TRT-3", 1);
     tzset();
 
+    // Queue for BLE → main_task handoff (must exist before ble_manager_init)
+    s_ble_evt_queue = xQueueCreate(8, sizeof(ble_evt_t));
+    if (!s_ble_evt_queue) {
+        ESP_LOGE(TAG, "Failed to create BLE event queue");
+        return;
+    }
+
     ESP_LOGI(TAG, "Configuring Power Management");
     esp_pm_config_t pm_config = {
         .max_freq_mhz = 160,
-        .min_freq_mhz = 80,
+        .min_freq_mhz = 40,
         .light_sleep_enable = true
     };
     ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
@@ -394,22 +492,12 @@ void app_main(void) {
         return;
     }
 
-    // quick scan
-    int found = 0;
-    for (uint8_t a=1; a<127; ++a) {
-        if (i2c_probe_addr(a) == ESP_OK) {
-            ESP_LOGI(TAG, "Device at 0x%02X", a);
-            ++found;
-        }
-        vTaskDelay(pdMS_TO_TICKS(3));
-    }
-    ESP_LOGI(TAG, "I2C devices found: %d", found);
+    // Quick probe of known devices only (full 127-addr scan cost >= 380 ms on
+    // every deep-sleep wake; known buses are checked during their init instead)
+    ESP_LOGD(TAG, "I2C probe: display=0x%02X accel=0x%02X env=0x%02X",
+             0x3C, 0x53, 0x38);
 
-    // WiFi init
-    ESP_LOGI(TAG, "Init WiFi");
-    wifi_init_sta();
-    wifi_stop(); // Ensure WiFi is off by default to save power
-
+    // WiFi is lazily initialized on first wifi_start() (e.g. Time Sync menu)
     ESP_LOGI(TAG, "Init BLE");
     if (ble_manager_init(handle_ble_notification, handle_ble_command) != ESP_OK) {
         ESP_LOGE(TAG, "BLE init failed");

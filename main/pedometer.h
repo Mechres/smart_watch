@@ -6,8 +6,10 @@
 #include <time.h>
 
 void pedometer_init(void);
+void pedometer_start_task(void);
 void pedometer_process(int16_t ax, int16_t ay, int16_t az);
 int pedometer_get_steps(void);
+void pedometer_get_latest_accel(int16_t *x, int16_t *y, int16_t *z);
 void pedometer_reset(void);
 
 // NVS Persistence

@@ -21,6 +21,9 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
 /* Returns true if currently showing the main watchface (not in a menu) */
 bool menu_is_watch_mode(void);
 
+/* Returns true if current screen requires continuous fast refresh (animations/stopwatch) */
+bool menu_needs_fast_refresh(void);
+
 /* Getters for settings managed by the menu */
 int16_t menu_get_motion_threshold(void);
 int16_t menu_get_screen_timeout(void);

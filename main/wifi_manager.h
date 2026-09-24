@@ -4,9 +4,16 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
-/* WiFi credentials - configure these for your network */
-#define WIFI_SSID      "SUPERONLINE_WiFi_C8AF"
-#define WIFI_PASS      "4UFRYY9EAXMN"
+#include "sdkconfig.h"
+
+/* WiFi credentials - configure via 'idf.py menuconfig' -> Smart Watch Configuration */
+#ifdef CONFIG_SMARTWATCH_WIFI_SSID
+#define WIFI_SSID      CONFIG_SMARTWATCH_WIFI_SSID
+#define WIFI_PASS      CONFIG_SMARTWATCH_WIFI_PASSWORD
+#else
+#define WIFI_SSID      "MySSID"
+#define WIFI_PASS      "MyPassword"
+#endif
 
 /* Initialize WiFi in Station mode and connect */
 void wifi_init_sta(void);

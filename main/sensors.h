@@ -1,6 +1,8 @@
 #ifndef SENSORS_H
 #define SENSORS_H
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 /* Device addresses */
@@ -18,5 +20,12 @@ esp_err_t sensors_read_accel(int16_t *x, int16_t *y, int16_t *z);
 
 /* Configure ADXL345 for single tap detection on INT1 */
 esp_err_t sensors_config_tap_wakeup(void);
+
+/* Clear ADXL345 interrupt flag by reading INT_SOURCE */
+esp_err_t sensors_clear_tap_interrupt(void);
+
+/* I2C bus concurrency locks */
+bool sensors_i2c_take(uint32_t timeout_ms);
+void sensors_i2c_give(void);
 
 #endif // SENSORS_H

@@ -22,4 +22,7 @@ void power_update_mode(uint32_t inactivity_secs);
 /* Get polling interval (ms) for current power mode */
 uint32_t power_get_poll_interval_ms(void);
 
+/* Safely shut down peripherals and enter deep sleep */
+void power_enter_deep_sleep(void);
+
 #endif // POWER_H

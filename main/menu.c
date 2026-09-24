@@ -17,6 +17,7 @@
 #include "esp_netif.h"
 #include "wifi_manager.h"
 #include "ble_manager.h"
+#include "power.h"
 
 static const char *TAG = "Menu";
 
@@ -120,6 +121,18 @@ bool menu_is_watch_mode(void) {
     return (current_menu == MENU_WATCH);
 }
 
+bool menu_needs_fast_refresh(void) {
+    if (current_menu == MENU_STOPWATCH && stopwatch_running) {
+        return true;
+    }
+    if (current_menu == MENU_WATCH) {
+        return (current_watchface == WATCHFACE_TERMINAL ||
+                current_watchface == WATCHFACE_MATRIX ||
+                current_watchface == WATCHFACE_CATS);
+    }
+    return false;
+}
+
 void menu_check_timeout(int32_t current_time_s) {
     if (current_menu == MENU_NOTIFICATION) {
         if ((current_time_s - menu_last_activity_s) > 10) {
@@ -128,6 +141,9 @@ void menu_check_timeout(int32_t current_time_s) {
         }
     } else if (current_menu != MENU_WATCH && (current_time_s - menu_last_activity_s) > 10) {
         ESP_LOGI(TAG, "Menu timeout - returning to watch");
+        if (editing_mode) {
+            settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+        }
         current_menu = MENU_WATCH;
         editing_mode = false;
     }
@@ -638,16 +654,13 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable += 10;
                 if (motion_threshold_editable > 500) motion_threshold_editable = 500;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             } else if (current_setting == SETTINGS_SCREEN_TIMEOUT) {
                 screen_timeout_editable += 1;
                 if (screen_timeout_editable > 60) screen_timeout_editable = 60;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             } else if (current_setting == SETTINGS_BRIGHTNESS) {
                 brightness_editable += 10;
                 if (brightness_editable > 255) brightness_editable = 255;
                 sh1106_set_contrast((uint8_t)brightness_editable);
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             }
         } else if (current_menu == MENU_SETTINGS) {
             if (current_setting > 0) current_setting--;
@@ -671,16 +684,13 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable -= 10;
                 if (motion_threshold_editable < 10) motion_threshold_editable = 10;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             } else if (current_setting == SETTINGS_SCREEN_TIMEOUT) {
                 screen_timeout_editable -= 1;
                 if (screen_timeout_editable < 1) screen_timeout_editable = 1;
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             } else if (current_setting == SETTINGS_BRIGHTNESS) {
                 brightness_editable -= 10;
                 if (brightness_editable < 0) brightness_editable = 0;
                 sh1106_set_contrast((uint8_t)brightness_editable);
-                settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
             }
         } else if (current_menu == MENU_SETTINGS) {
             if (current_setting < SETTINGS_COUNT - 1) current_setting++;
@@ -772,9 +782,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 fb_draw_text(10, 30, "Powering Off...");
                 sh1106_render();
                 vTaskDelay(pdMS_TO_TICKS(1000));
-                sh1106_display_off();
-                input_enable_deep_sleep_wakeup();
-                esp_deep_sleep_start();
+                power_enter_deep_sleep();
             } else {
                 editing_mode = true;
             }

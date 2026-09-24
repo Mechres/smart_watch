@@ -148,64 +148,39 @@ static bool copy_mbuf_to_buffer(struct os_mbuf *om, uint8_t *dst, uint16_t dst_s
     return true;
 }
 
-/* ULTRA-VERBOSE gatt_svr_chr_access callback */
+/* gatt_svr_chr_access callback */
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg) {
     (void)arg;
     
-    // Log every single access
-    printf("GATT CALLBACK INVOKED - printf check\n");
-    fflush(stdout);
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "╔════════════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   GATT CALLBACK INVOKED - TIMESTAMP: %lld     ║", esp_timer_get_time());
-    ESP_LOGI(TAG, "╚════════════════════════════════════════════════╝");
-    
     char uuid_str[BLE_UUID_STR_LEN];
     const char *uuid_readable = ctxt->chr ? ble_uuid_to_str(ctxt->chr->uuid, uuid_str) : "(null)";
-    uint16_t pkt_len = ctxt->om ? OS_MBUF_PKTLEN(ctxt->om) : 0;
-    
-    ESP_LOGI(TAG, "  Operation: %d (0=read_chr, 1=write_chr, 2=read_dsc, 3=write_dsc)", ctxt->op);
-    ESP_LOGI(TAG, "  Conn Handle: %u", conn_handle);
-    ESP_LOGI(TAG, "  Attr Handle: %u", attr_handle);
-    ESP_LOGI(TAG, "  UUID: %s", uuid_readable);
-    ESP_LOGI(TAG, "  Packet Len: %u", pkt_len);
-    ESP_LOGI(TAG, "  s_notification_handle: %u", s_notification_handle);
-    ESP_LOGI(TAG, "  s_control_handle: %u", s_control_handle);
+    ESP_LOGD(TAG, "GATT access op=%d conn=%u attr=%u uuid=%s", ctxt->op, conn_handle, attr_handle, uuid_readable);
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        printf("WRITE OPERATION DETECTED - printf check\n");
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "  ▶▶▶▶▶ WRITE OPERATION DETECTED ◀◀◀◀◀");
-        ESP_LOGI(TAG, "");
-        
         uint8_t buffer[256] = {0};
         uint16_t data_len = 0;
 
         if (!copy_mbuf_to_buffer(ctxt->om, buffer, sizeof(buffer), &data_len)) {
-            ESP_LOGE(TAG, "  ✗ Failed to copy mbuf data");
+            ESP_LOGE(TAG, "Failed to copy mbuf data");
             return BLE_ATT_ERR_UNLIKELY;
         }
 
-        ESP_LOGI(TAG, "  Write Data Length: %u bytes", data_len);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, data_len, ESP_LOG_INFO);
-        ESP_LOGI(TAG, "  Write Data (ASCII): '%.*s'", data_len, buffer);
+        ESP_LOGI(TAG, "GATT Write (attr=%u len=%u): '%.*s'", attr_handle, data_len, data_len, buffer);
 
         if (attr_handle == s_notification_handle) {
-            ESP_LOGI(TAG, "  ✓✓✓ NOTIFICATION CHARACTERISTIC WRITE ✓✓✓");
             handle_notification_write(buffer, data_len);
             send_write_ack(conn_handle, s_notification_handle, buffer, data_len);
             return 0;
         }
 
         if (attr_handle == s_control_handle) {
-            ESP_LOGI(TAG, "  ✓✓✓ CONTROL CHARACTERISTIC WRITE ✓✓✓");
             handle_control_write(buffer, data_len);
             send_write_ack(conn_handle, s_control_handle, buffer, data_len);
             return 0;
         }
 
-        ESP_LOGW(TAG, "  ✗✗✗ UNKNOWN HANDLE - NO MATCH ✗✗✗");
+        ESP_LOGW(TAG, "Write to unknown handle %u", attr_handle);
         return BLE_ATT_ERR_UNLIKELY;
     }
 
@@ -399,13 +374,15 @@ static void ble_app_advertise(void) {
 
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    adv_params.itvl_min = 800;  // 500ms (800 * 0.625ms)
+    adv_params.itvl_max = 1600; // 1000ms (1600 * 0.625ms)
 
     rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to start advertising; rc=%d", rc);
     } else {
         s_ble_advertising = true;
-        ESP_LOGI(TAG, "Advertising started (addr_type=%u) - VERSION 2", s_addr_type);
+        ESP_LOGI(TAG, "Advertising started (addr_type=%u)", s_addr_type);
     }
 }
 
@@ -443,11 +420,6 @@ esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
     s_notification_cb = notification_cb;
     s_control_cb = control_cb;
     ble_hs_cfg.gatts_register_cb = ble_on_gatt_register;
-    
-    // Enable verbose NimBLE logging
-    esp_log_level_set("NimBLE", ESP_LOG_DEBUG);
-    esp_log_level_set("BLE_GATTS", ESP_LOG_DEBUG);
-    esp_log_level_set("BLE_HS", ESP_LOG_DEBUG);
     s_notif_mutex = xSemaphoreCreateMutex();
 
     esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);

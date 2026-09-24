@@ -1,9 +1,9 @@
-// power.c - power management: light/deep sleep with smart polling
-
 #include "power.h"
 #include "esp_sleep.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
+#include "display.h"
+#include "sensors.h"
 
 static const char *TAG = "power";
 
@@ -15,6 +15,26 @@ static power_mode_t current_mode = POWER_ACTIVE;
 
 power_mode_t power_get_mode(void) {
     return current_mode;
+}
+
+void power_enter_deep_sleep(void) {
+    ESP_LOGI(TAG, "Entering deep sleep: turning off display and configuring wakeup...");
+    
+    // 1. Turn off OLED display to prevent battery drain and burn-in
+    sh1106_display_off();
+    
+    // 2. Clear any lingering tap interrupt on ADXL345
+    sensors_clear_tap_interrupt();
+    
+    // 3. Enable wakeup on GPIO 1 (ADXL345 tap, active LOW) and GPIO 5 (OK Button, active LOW)
+    uint64_t wake_mask = (1ULL << 1) | (1ULL << 5);
+    esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable deep sleep GPIO wakeup: %s", esp_err_to_name(err));
+    }
+    
+    // 4. Enter deep sleep
+    esp_deep_sleep_start();
 }
 
 void power_update_mode(uint32_t inactivity_secs) {
@@ -30,22 +50,11 @@ void power_update_mode(uint32_t inactivity_secs) {
     
     if (new_mode != current_mode) {
         ESP_LOGI(TAG, "Transitioning from mode %d to %d (inactivity=%u s)", current_mode, new_mode, inactivity_secs);
-        
-        // WiFi power is now handled on-demand by weather task
-        // if (new_mode == POWER_ACTIVE && current_mode != POWER_ACTIVE) {
-        //     wifi_start();
-        // } else if (new_mode != POWER_ACTIVE && current_mode == POWER_ACTIVE) {
-        //     wifi_stop();
-        // }
 
         current_mode = new_mode;
         
         if (current_mode == POWER_DEEP_SLEEP) {
-            ESP_LOGI(TAG, "Entering deep sleep...");
-            // Enable wakeup on GPIO 1 (High level)
-            // Note: ADXL345 INT pin active high/low depends on config. Default is active HIGH.
-            esp_deep_sleep_enable_gpio_wakeup(BIT(1), ESP_GPIO_WAKEUP_GPIO_HIGH);
-            esp_deep_sleep_start();
+            power_enter_deep_sleep();
         }
     }
 }

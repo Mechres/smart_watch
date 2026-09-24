@@ -4,6 +4,10 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "sensors.h"
+#include "power.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "Pedometer";
 
@@ -17,6 +21,36 @@ static int64_t last_step_time = 0;
 static float avg_mag = 256.0f; // Initial guess for 1g
 static int last_day_saved = -1;
 
+static int16_t s_latest_ax = 0;
+static int16_t s_latest_ay = 0;
+static int16_t s_latest_az = 0;
+
+static void pedometer_sampling_task(void *pvParameters) {
+    ESP_LOGI(TAG, "Pedometer task started at 25Hz");
+    while (1) {
+        if (power_get_mode() != POWER_DEEP_SLEEP) {
+            int16_t ax = 0, ay = 0, az = 0;
+            if (sensors_read_accel(&ax, &ay, &az) == ESP_OK) {
+                s_latest_ax = ax;
+                s_latest_ay = ay;
+                s_latest_az = az;
+                pedometer_process(ax, ay, az);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(40)); // 25 Hz sampling (40ms)
+    }
+}
+
+void pedometer_start_task(void) {
+    xTaskCreate(pedometer_sampling_task, "pedometer_task", 2048, NULL, 3, NULL);
+}
+
+void pedometer_get_latest_accel(int16_t *x, int16_t *y, int16_t *z) {
+    if (x) *x = s_latest_ax;
+    if (y) *y = s_latest_ay;
+    if (z) *z = s_latest_az;
+}
+
 void pedometer_init(void) {
     step_count = 0;
     last_step_time = 0;
@@ -24,8 +58,8 @@ void pedometer_init(void) {
 }
 
 void pedometer_process(int16_t ax, int16_t ay, int16_t az) {
-    // Calculate magnitude
-    float mag = sqrtf(ax*ax + ay*ay + az*az);
+    // Calculate magnitude (cast to float to prevent int32_t overflow)
+    float mag = sqrtf((float)ax * ax + (float)ay * ay + (float)az * az);
     
     // Low-pass filter for gravity estimation (slowly track baseline)
     avg_mag = avg_mag * 0.95f + mag * 0.05f;

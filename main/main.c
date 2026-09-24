@@ -185,14 +185,14 @@ static void main_task(void *arg) {
     battery_init();
     pedometer_init();
     pedometer_load();
+    pedometer_start_task();
     
     // Configure GPIO 1 for tap interrupt
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << 1);
-    io_conf.pull_down_en = 1; // Pull down if INT is active high
-    io_conf.pull_up_en = 0;
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 1; // Pull up for active-low INT
     gpio_config(&io_conf);
     
     // Configure ADXL345 for tap wakeup
@@ -210,6 +210,7 @@ static void main_task(void *arg) {
     } else {
         // Configure buttons for wakeup from light sleep
         input_enable_wakeup();
+        input_register_notify_task(xTaskGetCurrentTaskHandle());
     }
 
     // Initialize time tracking (use monotonic time for timeouts to avoid SNTP jumps)
@@ -238,30 +239,42 @@ static void main_task(void *arg) {
 
         // Only read sensors in active/idle modes (skip in deep sleep to save power)
         power_mode_t mode = power_get_mode();
-        float temp=0.0f, hum=0.0f;
-        int16_t ax=0, ay=0, az=0;
-        int batt_mv = 0;
-        int batt_pct = 0;
-        
-        // Always read battery (low overhead)
-        batt_mv = battery_get_voltage_mv();
-        batt_pct = battery_get_percentage();
-        
-        // Update BLE characteristics
-        ble_manager_update_battery((uint8_t)batt_pct);
-        ble_manager_update_steps((uint32_t)pedometer_get_steps());
-        
-        if (mode != POWER_DEEP_SLEEP) {
-            // Read sensors normally in active/idle/light-sleep modes
-            sensors_read_temp_hum(&temp, &hum);
-            sensors_read_accel(&ax, &ay, &az);
-            pedometer_process(ax, ay, az);
-        } else {
-            // In deep sleep, only read motion if motion was detected (via ISR in future)
-            // For now, just skip sensor reads to conserve power
-            ax=ay=az=0;
-            temp=hum=0.0f;
+        // Static cached readings to prevent aggressive polling and I2C blocking
+        static float cached_temp = 25.0f;
+        static float cached_hum = 50.0f;
+        static int32_t last_th_read_s = -100;
+        static int cached_batt_mv = 3800;
+        static int cached_batt_pct = 50;
+        static int32_t last_batt_read_s = -100;
+
+        // Periodic battery reading (every 5 seconds)
+        if (current_mono_s - last_batt_read_s >= 5 || last_batt_read_s < 0) {
+            cached_batt_mv = battery_get_voltage_mv();
+            cached_batt_pct = battery_mv_to_percentage(cached_batt_mv);
+            last_batt_read_s = current_mono_s;
+            ble_manager_update_battery((uint8_t)cached_batt_pct);
         }
+        int batt_mv = cached_batt_mv;
+        int batt_pct = cached_batt_pct;
+
+        // Update BLE characteristics
+        ble_manager_update_steps((uint32_t)pedometer_get_steps());
+
+        int16_t ax = 0, ay = 0, az = 0;
+        if (mode != POWER_DEEP_SLEEP) {
+            // Read temperature & humidity periodically (every 20s) to eliminate the 80ms blocking delay on each loop
+            if (current_mono_s - last_th_read_s >= 20 || last_th_read_s < 0) {
+                float t = 0.0f, h = 0.0f;
+                if (sensors_read_temp_hum(&t, &h) == ESP_OK) {
+                    cached_temp = t;
+                    cached_hum = h;
+                    last_th_read_s = current_mono_s;
+                }
+            }
+            pedometer_get_latest_accel(&ax, &ay, &az);
+        }
+        float temp = cached_temp;
+        float hum = cached_hum;
 
         // Detect motion and update screen state (only in active/idle modes)
         bool motion_detected = false;
@@ -272,23 +285,22 @@ static void main_task(void *arg) {
 
         // Handle event-driven button inputs from queue
         button_event_t btn_event;
+        bool button_activity = false;
         
-        // Check if any button event is available (non-blocking)
-        if (input_get_event(&btn_event)) {
+        // Process button events from queue
+        while (input_get_event(&btn_event)) {
+            button_activity = true;
+            last_motion_time_s = current_mono_s;
             // Wake screen if it's off
             if (!screen_on) {
                 ESP_LOGI(TAG, "Button pressed - waking screen");
                 sh1106_display_on();
                 screen_on = true;
-                // Update activity time so it doesn't immediately sleep
-                last_motion_time_s = current_mono_s;
-                // Consume the event (do NOT pass to menu) so the first press only wakes the screen
+                // Discard any other presses buffered while screen was off
+                while (input_get_event(&btn_event));
+                break;
             } else {
                 // Screen is already on, pass event to menu system
-                
-                // Update both motion and menu activity times to keep screen on
-                last_motion_time_s = current_mono_s;
-                
                 menu_handle_button(btn_event, current_mono_s);
             }
         }
@@ -296,47 +308,63 @@ static void main_task(void *arg) {
         // Check menu timeout
         menu_check_timeout(current_mono_s);
 
-        // Only render if screen is on
-        if (screen_on) {
-            menu_render(temp, hum, ax, ay, az, batt_mv, batt_pct, &timeinfo);
+        // Smart redraw gating: only render when display content has actually changed
+        static int last_rendered_min = -1;
+        static int last_rendered_steps = -1;
+        static int last_rendered_batt = -1;
+        static int last_rendered_temp = -100;
+        static bool last_screen_on = false;
 
-            // render
-            if (sh1106_render() != ESP_OK) {
-                ESP_LOGW(TAG, "render failed");
+        if (screen_on) {
+            bool needs_render = false;
+
+            if (!last_screen_on) {
+                // Screen just turned on: force render immediately
+                needs_render = true;
+            } else if (!menu_is_watch_mode()) {
+                // In menu: render on button events or continuous refresh (stopwatch)
+                if (button_activity || menu_needs_fast_refresh()) {
+                    needs_render = true;
+                }
+            } else if (menu_needs_fast_refresh()) {
+                // Animated watchface (Terminal, Cats, Matrix): continuous refresh
+                needs_render = true;
+            } else {
+                // Static watchface: render on minute change, step change, battery change, or button press
+                int cur_steps = pedometer_get_steps();
+                if (timeinfo.tm_min != last_rendered_min ||
+                    cur_steps != last_rendered_steps ||
+                    batt_pct != last_rendered_batt ||
+                    (int)temp != last_rendered_temp ||
+                    button_activity) {
+                    needs_render = true;
+                }
+            }
+
+            if (needs_render) {
+                menu_render(temp, hum, ax, ay, az, batt_mv, batt_pct, &timeinfo);
+                if (sh1106_render() != ESP_OK) {
+                    ESP_LOGW(TAG, "render failed");
+                }
+
+                last_rendered_min = timeinfo.tm_min;
+                last_rendered_steps = pedometer_get_steps();
+                last_rendered_batt = batt_pct;
+                last_rendered_temp = (int)temp;
             }
         }
+        last_screen_on = screen_on;
 
-        // Sleep for adaptive interval based on power mode (saves battery)
-        
         // Periodic Save (e.g. every 30 minutes = 1800 seconds)
-        // We use a simple static counter or timer check
         static int32_t last_save_s = 0;
         if ((current_mono_s - last_save_s) > 1800) {
              pedometer_save();
              last_save_s = current_mono_s;
         }
 
-        if (mode == POWER_LIGHT_SLEEP && ble_manager_is_active()) {
-            // Avoid light sleep while BLE is connected/advertising to keep the link alive
-            ESP_LOGD(TAG, "Skipping light sleep while BLE is active");
-            vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
-        } else if (mode == POWER_LIGHT_SLEEP) {
-            // In light sleep, use esp_light_sleep_start instead of vTaskDelay
-            // This stops the CPU but keeps RAM and peripherals (like I2C/GPIO) active
-            esp_sleep_enable_timer_wakeup(poll_interval_ms * 1000);
-            esp_light_sleep_start();
-            
-            // Check wakeup cause
-            esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-            if (cause == ESP_SLEEP_WAKEUP_GPIO) {
-                ESP_LOGI(TAG, "Woke up from GPIO (Button)");
-                // Yield to allow debounce task to run immediately
-                taskYIELD();
-            }
-        } else {
-            // Active or Deep Sleep (waiting to enter) -> use standard delay
-            vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
-        }
+        // Sleep for adaptive interval based on power mode, or wake immediately on button press
+        // FreeRTOS automatic light sleep (esp_pm_configure) handles power saving during delay
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(poll_interval_ms));
     }
 }
 

@@ -116,9 +116,7 @@ int battery_get_voltage_mv(void) {
     return 0;
 }
 
-int battery_get_percentage(void) {
-    int mv = battery_get_voltage_mv();
-    
+int battery_mv_to_percentage(int mv) {
     if (mv >= lipo_curve[0].voltage) return 100;
     if (mv <= lipo_curve[9].voltage) return 0;
 
@@ -135,4 +133,12 @@ int battery_get_percentage(void) {
     }
     
     return 0;
+}
+
+int battery_get_percentage(void) {
+    int mv = (int)s_smoothed_voltage;
+    if (mv <= 0) {
+        mv = battery_get_voltage_mv();
+    }
+    return battery_mv_to_percentage(mv);
 }

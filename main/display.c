@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "display.h"
+#include "sensors.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2c.h"
@@ -97,10 +98,63 @@ static const uint8_t font5x7[][5] = {
 
 static void fb_draw_char_internal(int x, int y, char c, int color, int bg_color, int scale) {
     if (c < 32 || c > 127) c = '?';
-    
-    // font5x7 is now at file scope
 
     const uint8_t *glyph = font5x7[c - 32];
+
+    // Fast path: scale == 1 and fully on screen
+    if (scale == 1 && x >= 0 && x + 5 <= DISP_WIDTH && y >= 0 && y + 7 <= DISP_HEIGHT) {
+        int page = y >> 3;
+        int shift = y & 7;
+
+        for (int col = 0; col < 5; ++col) {
+            uint8_t colbits = glyph[col];
+            int idx = page * DISP_WIDTH + x + col;
+
+            if (shift == 0) {
+                if (color == 1 && bg_color == 0) {
+                    fb[idx] = (fb[idx] & ~0x7F) | colbits;
+                } else if (color == 1 && bg_color == -1) {
+                    fb[idx] |= colbits;
+                } else if (color == 0 && bg_color == 1) {
+                    fb[idx] = (fb[idx] & ~0x7F) | (~colbits & 0x7F);
+                } else if (color == 0 && bg_color == -1) {
+                    fb[idx] &= ~colbits;
+                } else {
+                    for (int row = 0; row < 7; ++row) {
+                        int pixel_on = (colbits >> row) & 0x01;
+                        fb_set_pixel(x + col, y + row, pixel_on ? color : bg_color);
+                    }
+                }
+            } else {
+                uint8_t low_bits = (colbits << shift) & 0xFF;
+                uint8_t high_bits = (colbits >> (8 - shift));
+                uint8_t mask_low = (0x7F << shift) & 0xFF;
+                uint8_t mask_high = (0x7F >> (8 - shift)) & 0xFF;
+
+                if (color == 1 && bg_color == 0) {
+                    fb[idx] = (fb[idx] & ~mask_low) | low_bits;
+                    if (page + 1 < PAGE_COUNT) fb[idx + DISP_WIDTH] = (fb[idx + DISP_WIDTH] & ~mask_high) | high_bits;
+                } else if (color == 1 && bg_color == -1) {
+                    fb[idx] |= low_bits;
+                    if (page + 1 < PAGE_COUNT) fb[idx + DISP_WIDTH] |= high_bits;
+                } else if (color == 0 && bg_color == 1) {
+                    fb[idx] = (fb[idx] & ~mask_low) | (~low_bits & mask_low);
+                    if (page + 1 < PAGE_COUNT) fb[idx + DISP_WIDTH] = (fb[idx + DISP_WIDTH] & ~mask_high) | (~high_bits & mask_high);
+                } else if (color == 0 && bg_color == -1) {
+                    fb[idx] &= ~low_bits;
+                    if (page + 1 < PAGE_COUNT) fb[idx + DISP_WIDTH] &= ~high_bits;
+                } else {
+                    for (int row = 0; row < 7; ++row) {
+                        int pixel_on = (colbits >> row) & 0x01;
+                        fb_set_pixel(x + col, y + row, pixel_on ? color : bg_color);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Generic fallback for scaled text or partially clipped coordinates
     for (int col = 0; col < 5; ++col) {
         uint8_t colbits = glyph[col];
         for (int row = 0; row < 7; ++row) {
@@ -151,13 +205,21 @@ esp_err_t sh1106_render(void) {
         return ESP_OK;
     }
 
+    if (!sensors_i2c_take(100)) {
+        return ESP_ERR_TIMEOUT;
+    }
+
     for (int p = 0; p < PAGE_COUNT; ++p) {
         esp_err_t r = sh1106_write_page(p, &fb[p*DISP_WIDTH]);
-        if (r != ESP_OK) return r;
+        if (r != ESP_OK) {
+            sensors_i2c_give();
+            return r;
+        }
     }
     
     // Update last_fb
     memcpy(last_fb, fb, sizeof(fb));
+    sensors_i2c_give();
     
     return ESP_OK;
 }

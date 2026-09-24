@@ -68,13 +68,14 @@ Choose from a variety of stylish and functional watchfaces:
 | **Accel** | ADXL345 | I2C (SDA: GPIO8, SCL: GPIO9) |
 | **Sensor** | AHT10 / SHT3x (Temp/Hum) | I2C (SDA: GPIO8, SCL: GPIO9) |
 | **Buttons** | Push Buttons | GPIO Input (Active High/Low depending on config) |
-| **Battery** | LiPo Battery | Voltage Divider on GPIO2 |
+| **Battery** | LiPo Battery | Voltage Divider on GPIO4 |
 
 **Pinout Configuration:**
 - **I2C SDA**: GPIO 8
 - **I2C SCL**: GPIO 9
-- **Battery ADC**: GPIO 2
+- **Battery ADC**: GPIO 4 (ADC1 Channel 4)
 - **Tap Interrupt**: GPIO 1 (Configured for ADXL345)
+- **Buttons**: UP (GPIO 7), DOWN (GPIO 6), OK (GPIO 5)
 
 ## Installation
 
@@ -100,7 +101,7 @@ Choose from a variety of stylish and functional watchfaces:
     ```bash
     idf.py menuconfig
     ```
-    *Configure WiFi credentials and other settings if necessary.*
+    *Configure WiFi credentials under "Smart Watch Configuration" and other settings if necessary.*
 
 4.  **Build the project:**
     ```bash

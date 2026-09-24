@@ -1,0 +1,15 @@
+menu "Smart Watch Configuration"
+
+    config SMARTWATCH_WIFI_SSID
+        string "WiFi SSID"
+        default "MySSID"
+        help
+            SSID of the WiFi network for time sync.
+
+    config SMARTWATCH_WIFI_PASSWORD
+        string "WiFi Password"
+        default "MyPassword"
+        help
+            Password of the WiFi network for time sync.
+
+endmenu

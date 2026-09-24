@@ -13,6 +13,7 @@ idf_component_register(
         "pedometer.c"
         "weather.c"
         "ble_manager.c"
+        "gesture.c"
     INCLUDE_DIRS
         "."
     REQUIRES

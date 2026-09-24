@@ -20,6 +20,7 @@
 #include "power.h"
 #include "input.h"
 #include "sensors.h"
+#include "gesture.h"
 #include "wifi_manager.h"
 #include "menu.h"
 #include "battery.h"
@@ -65,50 +66,38 @@ static esp_err_t i2c_probe_addr(uint8_t addr) {
     return err;
 }
 
-/* Motion-based screen control */
+/* Motion and gesture-based screen control */
 static bool screen_on = true;
 static int32_t last_motion_time_s = 0;
-static int16_t last_ax = 0, last_ay = 0, last_az = 0;  // for delta calculation
 
-/* Detect motion from accelerometer readings */
-static bool detect_motion(int16_t ax, int16_t ay, int16_t az) {
-    // Calculate delta (change) in acceleration from last reading
-    int16_t dx = ax - last_ax;
-    int16_t dy = ay - last_ay;
-    int16_t dz = az - last_az;
-    
-    // Store current values for next comparison
-    last_ax = ax;
-    last_ay = ay;
-    last_az = az;
-    
-    // Calculate magnitude of acceleration delta
-    int32_t delta_mag_sq = (int32_t)dx*dx + (int32_t)dy*dy + (int32_t)dz*dz;
-    
-    // Get threshold from settings
-    int32_t threshold = menu_get_motion_threshold();
-    int32_t threshold_sq = threshold * threshold; 
-    
-    return delta_mag_sq > threshold_sq;
-}
-
-/* Update screen state based on motion and timeout */
-static void update_screen_state(bool motion_detected, int32_t current_time_s) {
-    // Don't auto-timeout screen if user is navigating menus
+/* Update screen state based on wrist tilt gesture, viewing position, and timeout */
+static void update_screen_state(int32_t current_time_s) {
     bool in_menu = !menu_is_watch_mode();
     
-    if (motion_detected) {
-        last_motion_time_s = current_time_s;
-        if (!screen_on) {
-            ESP_LOGI(TAG, "Motion detected - turning screen ON");
+    if (!screen_on) {
+        // Screen is OFF: check for wrist-tilt raise-to-wake gesture
+        if (gesture_has_raised_to_wake()) {
+            ESP_LOGI(TAG, "Wrist raised to face - turning screen ON");
             sh1106_display_on();
             screen_on = true;
+            gesture_notify_screen_state(true);
+            last_motion_time_s = current_time_s;
         }
-    } else if (screen_on && !in_menu && (current_time_s - last_motion_time_s) >= menu_get_screen_timeout()) {
-        // Only auto-off in watch mode after timeout, not in menu
-        ESP_LOGI(TAG, "No motion for %d seconds - turning screen OFF", menu_get_screen_timeout());
-        sh1106_display_off();
-        screen_on = false;
+    } else {
+        if (!in_menu) {
+            // In watch mode: check for lower-to-sleep gesture or timeout
+            if (gesture_should_lower_to_sleep()) {
+                ESP_LOGI(TAG, "Wrist lowered - turning screen OFF immediately");
+                sh1106_display_off();
+                screen_on = false;
+                gesture_notify_screen_state(false);
+            } else if ((current_time_s - last_motion_time_s) >= menu_get_screen_timeout()) {
+                ESP_LOGI(TAG, "Screen timeout (%d s) - turning screen OFF", menu_get_screen_timeout());
+                sh1106_display_off();
+                screen_on = false;
+                gesture_notify_screen_state(false);
+            }
+        }
     }
 }
 
@@ -124,6 +113,7 @@ static void handle_ble_notification(const char *title, const char *body) {
     if (!screen_on) {
         sh1106_display_on();
         screen_on = true;
+        gesture_notify_screen_state(true);
     }
 }
 
@@ -137,11 +127,13 @@ static void handle_ble_command(const char *command) {
     } else if (strcmp(command, "screen_on") == 0) {
         sh1106_display_on();
         screen_on = true;
+        gesture_notify_screen_state(true);
         // Reset inactivity timer so it doesn't immediately turn off
         last_motion_time_s = (int32_t)(esp_timer_get_time() / 1000000);
     } else if (strcmp(command, "screen_off") == 0) {
         sh1106_display_off();
         screen_on = false;
+        gesture_notify_screen_state(false);
         // Force inactivity timer to expire so it can enter light sleep immediately
         // Subtracting 60s ensures we are well past the light sleep threshold (30s)
         last_motion_time_s = (int32_t)(esp_timer_get_time() / 1000000) - 60;
@@ -213,6 +205,12 @@ static void main_task(void *arg) {
         input_register_notify_task(xTaskGetCurrentTaskHandle());
     }
 
+    // Initialize wrist-tilt gesture engine
+    gesture_init();
+    gesture_register_notify_task(xTaskGetCurrentTaskHandle());
+    gesture_set_sensitivity(menu_get_motion_threshold());
+    gesture_notify_screen_state(screen_on);
+
     // Initialize time tracking (use monotonic time for timeouts to avoid SNTP jumps)
     int64_t now_mono_us = esp_timer_get_time();
     last_motion_time_s = (int32_t)(now_mono_us / 1000000);
@@ -276,12 +274,11 @@ static void main_task(void *arg) {
         float temp = cached_temp;
         float hum = cached_hum;
 
-        // Detect motion and update screen state (only in active/idle modes)
-        bool motion_detected = false;
+        // Update gesture sensitivity and screen state (only in active/idle modes)
         if (mode != POWER_DEEP_SLEEP) {
-            motion_detected = detect_motion(ax, ay, az);
+            gesture_set_sensitivity(menu_get_motion_threshold());
+            update_screen_state(current_mono_s);
         }
-        update_screen_state(motion_detected, current_mono_s);
 
         // Handle event-driven button inputs from queue
         button_event_t btn_event;
@@ -296,6 +293,7 @@ static void main_task(void *arg) {
                 ESP_LOGI(TAG, "Button pressed - waking screen");
                 sh1106_display_on();
                 screen_on = true;
+                gesture_notify_screen_state(true);
                 // Discard any other presses buffered while screen was off
                 while (input_get_event(&btn_event));
                 break;

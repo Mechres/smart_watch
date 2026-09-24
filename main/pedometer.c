@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "sensors.h"
 #include "power.h"
+#include "gesture.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -35,6 +36,7 @@ static void pedometer_sampling_task(void *pvParameters) {
                 s_latest_ay = ay;
                 s_latest_az = az;
                 pedometer_process(ax, ay, az);
+                gesture_process(ax, ay, az);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(40)); // 25 Hz sampling (40ms)

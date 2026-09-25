@@ -16,11 +16,13 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.hikaboshi.companion.MainActivity
 import com.hikaboshi.companion.R
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
  * Foreground service keeping the BLE link alive while the app is backgrounded.
  * Hosts find-phone ringing and media key dispatch for watch-initiated events.
+ * START_STICKY + remembered device = link survives reboots and process kills.
  */
 class WatchLinkService : LifecycleService() {
 
@@ -51,57 +53,48 @@ class WatchLinkService : LifecycleService() {
 
     private var ble: WatchBleManager? = null
     private var ringing = false
+    private var stateJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         createChannel()
-        sharedManager?.let { attachManager(it) }
+        val mgr = sharedManager ?: BleHolder.get(this).also { sharedManager = it }
+        attachManager(mgr)
+        // Keep the foreground notification truthful without manual updates.
+        stateJob?.cancel()
+        stateJob = lifecycleScope.launch {
+            mgr.state.collect { s ->
+                updateNotification(
+                    when {
+                        s.connected -> "Connected to Hikaboshi"
+                        s.connecting || s.reconnecting -> "Connecting to watch…"
+                        else -> "Disconnected — tap to open app"
+                    },
+                )
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        startForeground(NOTIF_ID, buildNotification("Connecting…"))
+        startForeground(NOTIF_ID, buildNotification("Starting…"))
 
-        sharedManager?.let { attachManager(it) }
-        val manager = ble
+        val mgr = ble ?: BleHolder.get(this).also { attachManager(it) }
         val address = intent?.getStringExtra(EXTRA_ADDRESS)
-            ?: manager?.state?.value?.address
-
-        if (manager != null && manager.state.value.connected) {
-            updateNotification("Connected to Hikaboshi")
-            return START_NOT_STICKY
-        }
-        if (manager != null && manager.state.value.connecting) {
-            return START_NOT_STICKY
-        }
-        // Never open a second GATT client (watch allows only 1 connection).
-        if (manager == null) {
-            updateNotification("Waiting for app connection…")
-            return START_NOT_STICKY
-        }
-        if (address != null) {
-            ensureBle(address)
-        }
-        return START_NOT_STICKY
-    }
-
-    private fun ensureBle(address: String) {
-        val manager = ble ?: return
-        manager.onControlEvent = { cmd -> handleControl(cmd) }
-        if (manager.state.value.connected) {
-            updateNotification("Connected to Hikaboshi")
-            return
-        }
-        if (manager.state.value.connecting) return
         lifecycleScope.launch {
-            try {
-                manager.connect(address)
-                updateNotification("Connected to Hikaboshi")
-            } catch (e: Exception) {
-                updateNotification("Connection failed: ${e.message}")
+            if (address != null && !mgr.state.value.connected && !mgr.state.value.connecting) {
+                try {
+                    mgr.connect(address)
+                } catch (e: Exception) {
+                    // connect() failure still leaves the reconnect loop running
+                    // when auto-connect is on.
+                }
+            } else {
+                mgr.autoConnectIfRemembered()
             }
         }
+        return START_STICKY
     }
 
     fun attachManager(manager: WatchBleManager) {
@@ -191,6 +184,8 @@ class WatchLinkService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        stateJob?.cancel()
+        stateJob = null
         instance = null
         if (ble === sharedManager) {
             // UI owns the shared manager — don't tear it down here.

@@ -18,9 +18,15 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
@@ -36,7 +42,10 @@ data class DiscoveredDevice(
 data class WatchState(
     val connected: Boolean = false,
     val connecting: Boolean = false,
+    val reconnecting: Boolean = false,
     val address: String? = null,
+    val lastAddress: String? = null,
+    val autoConnect: Boolean = true,
     val battery: Int? = null,
     val steps: Long? = null,
     val distanceM: Long? = null,
@@ -62,6 +71,7 @@ class WatchBleManager(private val context: Context) {
         private const val TAG = "WatchBle"
         private const val CCCD = "00002902-0000-1000-8000-00805f9b34fb"
         private const val MAX_LOG = 200
+        private val RECONNECT_DELAYS = longArrayOf(5, 10, 20, 30, 60, 60, 60, 60)
     }
 
     private val _state = MutableStateFlow(WatchState())
@@ -85,6 +95,47 @@ class WatchBleManager(private val context: Context) {
 
     private var pendingConnect: ((Result<BluetoothGatt>) -> Unit)? = null
     private var pendingWrite: ((Result<Unit>) -> Unit)? = null
+
+    private val prefs = context.getSharedPreferences(BleHolder.PREFS, Context.MODE_PRIVATE)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var reconnectJob: Job? = null
+    private var userDisconnected = false
+
+    init {
+        _state.value = _state.value.copy(
+            lastAddress = prefs.getString(BleHolder.KEY_ADDRESS, null),
+            autoConnect = prefs.getBoolean(BleHolder.KEY_AUTO_CONNECT, true),
+        )
+    }
+
+    /** Persisted toggle for auto-connect + background reconnect. */
+    fun setAutoConnect(enabled: Boolean) {
+        prefs.edit().putBoolean(BleHolder.KEY_AUTO_CONNECT, enabled).apply()
+        _state.value = _state.value.copy(autoConnect = enabled)
+        if (!enabled) {
+            reconnectJob?.cancel()
+            reconnectJob = null
+            _state.value = _state.value.copy(reconnecting = false)
+        }
+        appendLog("Auto-connect ${if (enabled) "on" else "off"}")
+    }
+
+    /** Forget the remembered device (also disconnects). */
+    fun forgetDevice() {
+        prefs.edit().remove(BleHolder.KEY_ADDRESS).apply()
+        _state.value = _state.value.copy(lastAddress = null)
+        disconnect()
+        appendLog("Forgot device")
+    }
+
+    /** Read by the notification listener; kept here so all prefs live together. */
+    fun forwardingEnabled(): Boolean =
+        prefs.getBoolean(BleHolder.KEY_FORWARD, false)
+
+    fun setForwarding(enabled: Boolean) {
+        prefs.edit().putBoolean(BleHolder.KEY_FORWARD, enabled).apply()
+        appendLog("Notification forwarding ${if (enabled) "on" else "off"}")
+    }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -137,6 +188,7 @@ class WatchBleManager(private val context: Context) {
                     if (this@WatchBleManager.gatt === gatt) {
                         this@WatchBleManager.gatt = null
                     }
+                    val wasConnected = _state.value.connected
                     _state.value = _state.value.copy(
                         connected = false,
                         connecting = false,
@@ -146,6 +198,12 @@ class WatchBleManager(private val context: Context) {
                         caloriesKcal = null,
                         mtu = null,
                     )
+                    // Unexpected drop (not a manual disconnect): back off and retry.
+                    if (!userDisconnected && (wasConnected || _state.value.reconnecting)) {
+                        scheduleReconnect()
+                    } else {
+                        _state.value = _state.value.copy(reconnecting = false)
+                    }
                 }
             }
         }
@@ -199,9 +257,12 @@ class WatchBleManager(private val context: Context) {
                     _state.value = _state.value.copy(
                         connected = true,
                         connecting = false,
+                        reconnecting = false,
                         address = gatt.device.address,
+                        lastAddress = gatt.device.address,
                         error = null,
                     )
+                    prefs.edit().putString(BleHolder.KEY_ADDRESS, gatt.device.address).apply()
                     appendLog("Ready (${gatt.device.address})")
                     pendingConnect?.let { it(Result.success(gatt)); pendingConnect = null }
                     // Prime reads (fitness + battery)
@@ -209,6 +270,16 @@ class WatchBleManager(private val context: Context) {
                     stepsChar?.let { gatt.readCharacteristic(it) }
                     distanceChar?.let { gatt.readCharacteristic(it) }
                     caloriesChar?.let { gatt.readCharacteristic(it) }
+                    // The watch has no battery-backed clock guarantee; sync on every
+                    // connect so alarms and timestamps are right.
+                    this@WatchBleManager.scope.launch {
+                        try {
+                            sendTimeSync()
+                            appendLog("Auto time-sync sent")
+                        } catch (e: Exception) {
+                            appendLog("Auto time-sync failed: ${e.message}")
+                        }
+                    }
                     // Notification payloads can be 161 B; default MTU (23) truncates
                     // reads. Request the firmware's preferred 256.
                     try {
@@ -524,6 +595,34 @@ class WatchBleManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     suspend fun connect(address: String) {
+        // Manual entry: stop any background reconnect loop first.
+        reconnectJob?.cancel()
+        reconnectJob = null
+        _state.value = _state.value.copy(reconnecting = false)
+        connectInternal(address)
+    }
+
+    /**
+     * Boot/service entry: connect to the remembered device when auto-connect
+     * is on. A failure schedules the background retry loop instead of
+     * throwing all the way out.
+     */
+    suspend fun autoConnectIfRemembered(): Boolean {
+        val addr = prefs.getString(BleHolder.KEY_ADDRESS, null) ?: return false
+        if (!_state.value.autoConnect) return false
+        if (_state.value.connected || _state.value.connecting) return true
+        return try {
+            connectInternal(addr)
+            true
+        } catch (e: Exception) {
+            appendLog("Auto-connect failed (${e.message}), retrying in background")
+            scheduleReconnect()
+            false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun connectInternal(address: String) {
         if (!hasBlePermission()) {
             _state.value = _state.value.copy(error = "Bluetooth permission missing")
             return
@@ -538,7 +637,8 @@ class WatchBleManager(private val context: Context) {
             return
         }
         stopScan()
-        disconnect()
+        disconnectInternal(userInitiated = false)
+        userDisconnected = false
         _state.value = _state.value.copy(connecting = true, error = null)
         appendLog("Connecting to $address…")
 
@@ -575,6 +675,16 @@ class WatchBleManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
+        disconnectInternal(userInitiated = true)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun disconnectInternal(userInitiated: Boolean) {
+        if (userInitiated) {
+            userDisconnected = true
+            reconnectJob?.cancel()
+            reconnectJob = null
+        }
         try {
             gatt?.disconnect()
             gatt?.close()
@@ -587,7 +697,41 @@ class WatchBleManager(private val context: Context) {
         stepsChar = null
         distanceChar = null
         caloriesChar = null
-        _state.value = _state.value.copy(connected = false, connecting = false)
+        _state.value = _state.value.copy(
+            connected = false,
+            connecting = false,
+            reconnecting = if (userInitiated) false else _state.value.reconnecting,
+        )
+    }
+
+    /** Background retry loop with backoff; cancelled by manual connect/disconnect. */
+    private fun scheduleReconnect() {
+        val addr = _state.value.lastAddress
+            ?: prefs.getString(BleHolder.KEY_ADDRESS, null)
+            ?: return
+        if (!_state.value.autoConnect) {
+            _state.value = _state.value.copy(reconnecting = false)
+            return
+        }
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            _state.value = _state.value.copy(reconnecting = true, error = null)
+            for ((i, delayS) in RECONNECT_DELAYS.withIndex()) {
+                if (_state.value.connected || userDisconnected) break
+                appendLog("Reconnect in ${delayS}s (attempt ${i + 1}/${RECONNECT_DELAYS.size})…")
+                delay(delayS * 1000)
+                if (_state.value.connected || userDisconnected) break
+                appendLog("Reconnect attempt ${i + 1}…")
+                try {
+                    connectInternal(addr)
+                    break
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    appendLog("Reconnect failed: ${e.message}")
+                }
+            }
+            _state.value = _state.value.copy(reconnecting = false)
+        }
     }
 
     @SuppressLint("MissingPermission")

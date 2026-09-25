@@ -7,18 +7,20 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.hikaboshi.companion.ble.WatchBleManager
+import com.hikaboshi.companion.ble.BleHolder
 import com.hikaboshi.companion.ui.WatchApp
 import com.hikaboshi.companion.ui.WatchViewModel
 import com.hikaboshi.companion.ui.WatchViewModelFactory
 
 class MainActivity : ComponentActivity() {
-
-    private lateinit var ble: WatchBleManager
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
@@ -26,13 +28,28 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        ble = WatchBleManager(applicationContext)
+        // Must be the app-scoped singleton: the notification listener and boot
+        // receiver read/write the same manager instance, not one tied to this Activity.
+        val ble = BleHolder.get(applicationContext)
         ensurePermissions()
 
         setContent {
             val factory = WatchViewModelFactory(ble, applicationContext)
             val vm: WatchViewModel = viewModel(factory = factory)
             val state by vm.ui.collectAsState()
+
+            val lifecycleOwner = LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner) {
+                vm.autoStart()
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) {
+                        vm.refreshListenerState()
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+            }
+
             WatchApp(vm = vm, state = state)
         }
     }

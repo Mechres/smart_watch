@@ -40,8 +40,18 @@ object Protocol {
         )
     }
 
-    fun notificationPayload(title: String, body: String): ByteArray =
-        "$title|$body".toByteArray(Charsets.UTF_8)
+    /** Title|Body payload, truncated to the firmware's field limits (UTF-8 safe). */
+    fun notificationPayload(title: String, body: String): ByteArray {
+        // Firmware caps: title 31 B, body 127 B. Never split a code point.
+        fun trunc(s: String, maxBytes: Int): String {
+            val b = s.toByteArray(Charsets.UTF_8)
+            if (b.size <= maxBytes) return s
+            var end = maxBytes
+            while (end > 0 && b[end - 1].toInt() and 0xC0 == 0x80) end--
+            return String(b, 0, end, Charsets.UTF_8)
+        }
+        return "${trunc(title, 31)}|${trunc(body, 127)}".toByteArray(Charsets.UTF_8)
+    }
 
     fun parseBattery(data: ByteArray): Int? =
         data.firstOrNull()?.toInt()?.and(0xFF)

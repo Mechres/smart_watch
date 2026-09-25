@@ -1,6 +1,9 @@
 package com.hikaboshi.companion.ui
 
 import android.content.Context
+import android.content.Intent
+import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -24,6 +27,8 @@ data class UiState(
     val history: List<String> = emptyList(),
     val busy: Boolean = false,
     val toast: String? = null,
+    val forwardEnabled: Boolean = false,
+    val listenerGranted: Boolean = false,
 )
 
 class WatchViewModelFactory(
@@ -45,6 +50,10 @@ class WatchViewModel(
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     init {
+        _ui.value = _ui.value.copy(
+            forwardEnabled = ble.forwardingEnabled(),
+            listenerGranted = isListenerGranted(),
+        )
         viewModelScope.launch {
             ble.state.collect { s ->
                 _ui.value = _ui.value.copy(ble = s)
@@ -109,6 +118,53 @@ class WatchViewModel(
         _ui.value = _ui.value.copy(toast = "Disconnected")
     }
 
+    /** Auto-connect on app start when a device is remembered. */
+    fun autoStart() {
+        val s = ble.state.value
+        val addr = s.lastAddress
+        if (s.autoConnect && addr != null && !s.connected && !s.connecting) {
+            connect(addr)
+        }
+    }
+
+    fun setAutoConnect(enabled: Boolean) {
+        ble.setAutoConnect(enabled)
+    }
+
+    fun forgetDevice() {
+        ble.forgetDevice()
+        WatchLinkService.stop(appContext)
+        _ui.value = _ui.value.copy(toast = "Device forgotten")
+    }
+
+    fun setForwarding(enabled: Boolean) {
+        ble.setForwarding(enabled)
+        _ui.value = _ui.value.copy(forwardEnabled = enabled)
+    }
+
+    fun openListenerSettings() {
+        val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            appContext.startActivity(intent)
+        } catch (e: Exception) {
+            _ui.value = _ui.value.copy(toast = "Cannot open settings: ${e.message}")
+        }
+    }
+
+    /** Re-check system listener access (call from onResume). */
+    fun refreshListenerState() {
+        _ui.value = _ui.value.copy(
+            listenerGranted = isListenerGranted(),
+            forwardEnabled = ble.forwardingEnabled(),
+        )
+    }
+
+    private fun isListenerGranted(): Boolean {
+        val pkgs = NotificationManagerCompat.getEnabledListenerPackages(appContext)
+        return pkgs.contains(appContext.packageName)
+    }
+
     fun refresh() = ble.refreshReads()
 
     fun setNotifTitle(v: String) {
@@ -123,6 +179,10 @@ class WatchViewModel(
         val t = _ui.value.notifTitle.ifBlank { "Message" }
         val b = _ui.value.notifBody
         safeLaunch("Notification sent") { ble.sendNotification(t, b) }
+    }
+
+    fun sendPreset(body: String) {
+        safeLaunch("Sent") { ble.sendNotification("Hikaboshi", body) }
     }
 
     fun setTimeSync() = safeLaunch("Time synced") { ble.sendTimeSync() }

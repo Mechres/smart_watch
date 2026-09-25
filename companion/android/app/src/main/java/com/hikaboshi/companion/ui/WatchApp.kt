@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.BrightnessHigh
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Smartphone
@@ -34,6 +35,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -65,12 +67,11 @@ fun WatchApp(vm: WatchViewModel, state: UiState) {
                     Column {
                         Text("Hikaboshi")
                         Text(
-                            if (state.ble.connected) {
-                                "Connected ${state.ble.address ?: ""}"
-                            } else if (state.ble.connecting) {
-                                "Connecting…"
-                            } else {
-                                "Disconnected"
+                            when {
+                                state.ble.connected -> "Connected ${state.ble.address ?: ""}"
+                                state.ble.connecting -> "Connecting…"
+                                state.ble.reconnecting -> "Reconnecting…"
+                                else -> "Disconnected"
                             },
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -98,10 +99,89 @@ fun WatchApp(vm: WatchViewModel, state: UiState) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            LinkSettingsCard(state, vm)
+            NotificationSettingsCard(state, vm)
             if (!state.ble.connected) {
                 ScanSection(state, vm)
             } else {
                 DashboardSection(state, vm)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LinkSettingsCard(state: UiState, vm: WatchViewModel) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Link", style = MaterialTheme.typography.titleMedium)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Auto-connect")
+                    Text(
+                        "Reconnect in background and after reboot",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(
+                    checked = state.ble.autoConnect,
+                    onCheckedChange = { vm.setAutoConnect(it) },
+                )
+            }
+            if (state.ble.lastAddress != null) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Remembered: ${state.ble.lastAddress}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    OutlinedButton(onClick = { vm.forgetDevice() }) { Text("Forget") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationSettingsCard(state: UiState, vm: WatchViewModel) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Phone notifications", style = MaterialTheme.typography.titleMedium)
+            if (!state.listenerGranted) {
+                Text(
+                    "Grant notification access to forward phone notifications to the watch.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedButton(onClick = { vm.openListenerSettings() }) {
+                    Icon(Icons.Default.NotificationsActive, null)
+                    Text("  Grant access")
+                }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Forward to watch")
+                        Text(
+                            "Sends title + text of new phone notifications",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = state.forwardEnabled,
+                        onCheckedChange = { vm.setForwarding(it) },
+                    )
+                }
             }
         }
     }
@@ -249,6 +329,16 @@ private fun DashboardSection(state: UiState, vm: WatchViewModel) {
                 Button(onClick = vm::sendNotification, enabled = !state.busy) {
                     Icon(Icons.Default.Send, null)
                     Text("  Send")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { vm.sendPreset("👋 Test notification") },
+                        enabled = !state.busy,
+                    ) { Text("Test") }
+                    OutlinedButton(
+                        onClick = { vm.sendPreset("🔔 Ping") },
+                        enabled = !state.busy,
+                    ) { Text("Ping") }
                 }
             }
         }

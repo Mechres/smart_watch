@@ -117,6 +117,7 @@ class WatchLinkService : LifecycleService() {
             Protocol.EVT_MUSIC_TOGGLE -> sendMedia(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
             Protocol.EVT_MUSIC_NEXT -> sendMedia(KeyEvent.KEYCODE_MEDIA_NEXT)
             Protocol.EVT_MUSIC_PREV -> sendMedia(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+            Protocol.EVT_ALARM -> updateNotification("Alarm! (from watch)")
         }
     }
 

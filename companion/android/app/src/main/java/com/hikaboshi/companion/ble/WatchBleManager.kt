@@ -39,6 +39,9 @@ data class WatchState(
     val address: String? = null,
     val battery: Int? = null,
     val steps: Long? = null,
+    val distanceM: Long? = null,
+    val caloriesKcal: Double? = null,
+    val mtu: Int? = null,
     val lastNotification: Protocol.WatchNotification? = null,
     val lastControlMessage: String? = null,
     val lastOtaStatus: String? = null,
@@ -77,6 +80,8 @@ class WatchBleManager(private val context: Context) {
     private var controlChar: BluetoothGattCharacteristic? = null
     private var batteryChar: BluetoothGattCharacteristic? = null
     private var stepsChar: BluetoothGattCharacteristic? = null
+    private var distanceChar: BluetoothGattCharacteristic? = null
+    private var caloriesChar: BluetoothGattCharacteristic? = null
 
     private var pendingConnect: ((Result<BluetoothGatt>) -> Unit)? = null
     private var pendingWrite: ((Result<Unit>) -> Unit)? = null
@@ -137,6 +142,9 @@ class WatchBleManager(private val context: Context) {
                         connecting = false,
                         battery = null,
                         steps = null,
+                        distanceM = null,
+                        caloriesKcal = null,
+                        mtu = null,
                     )
                 }
             }
@@ -172,6 +180,8 @@ class WatchBleManager(private val context: Context) {
             controlChar = service.getCharacteristic(Protocol.CHAR_CONTROL)
             batteryChar = service.getCharacteristic(Protocol.CHAR_BATTERY)
             stepsChar = service.getCharacteristic(Protocol.CHAR_STEPS)
+            distanceChar = service.getCharacteristic(Protocol.CHAR_DISTANCE)
+            caloriesChar = service.getCharacteristic(Protocol.CHAR_CALORIES)
 
             if (controlChar == null || notifyChar == null) {
                 if (retryDiscovery(gatt, "chars missing")) return
@@ -179,8 +189,11 @@ class WatchBleManager(private val context: Context) {
                 return
             }
 
-            // Enable notifications on all four, then resolve connect.
-            val chars = listOfNotNull(notifyChar, controlChar, batteryChar, stepsChar)
+            // Enable notifications on all known chars, then resolve connect.
+            val chars = listOfNotNull(
+                notifyChar, controlChar, batteryChar, stepsChar,
+                distanceChar, caloriesChar,
+            )
             enableNotifications(gatt, chars, 0) { ok ->
                 if (ok) {
                     _state.value = _state.value.copy(
@@ -191,8 +204,18 @@ class WatchBleManager(private val context: Context) {
                     )
                     appendLog("Ready (${gatt.device.address})")
                     pendingConnect?.let { it(Result.success(gatt)); pendingConnect = null }
-                    // Prime reads
+                    // Prime reads (fitness + battery)
                     batteryChar?.let { gatt.readCharacteristic(it) }
+                    stepsChar?.let { gatt.readCharacteristic(it) }
+                    distanceChar?.let { gatt.readCharacteristic(it) }
+                    caloriesChar?.let { gatt.readCharacteristic(it) }
+                    // Notification payloads can be 161 B; default MTU (23) truncates
+                    // reads. Request the firmware's preferred 256.
+                    try {
+                        gatt.requestMtu(256)
+                    } catch (e: Exception) {
+                        appendLog("requestMtu failed: ${e.message}")
+                    }
                 } else {
                     val e = IllegalStateException("Failed to enable notifications")
                     pendingConnect?.let { it(Result.failure(e)); pendingConnect = null }
@@ -328,6 +351,15 @@ class WatchBleManager(private val context: Context) {
                 pend?.invoke(Result.failure(IllegalStateException("Write failed: $status")))
             }
         }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                appendLog("MTU negotiated: $mtu")
+                _state.value = _state.value.copy(mtu = mtu)
+            } else {
+                appendLog("MTU request failed: $status")
+            }
+        }
     }
 
     private var pendingDescWrite: (() -> Unit)? = null
@@ -342,6 +374,14 @@ class WatchBleManager(private val context: Context) {
             Protocol.CHAR_STEPS -> {
                 val steps = Protocol.parseSteps(value)
                 if (steps != null) _state.value = _state.value.copy(steps = steps)
+            }
+            Protocol.CHAR_DISTANCE -> {
+                val m = Protocol.parseDistanceM(value)
+                if (m != null) _state.value = _state.value.copy(distanceM = m)
+            }
+            Protocol.CHAR_CALORIES -> {
+                val kcal = Protocol.parseCaloriesKcal(value)
+                if (kcal != null) _state.value = _state.value.copy(caloriesKcal = kcal)
             }
             Protocol.CHAR_NOTIFICATION -> {
                 // Could be a write-ACK (echo) or a real notify; try parse.
@@ -363,13 +403,14 @@ class WatchBleManager(private val context: Context) {
                                 lastOtaProgress = msg.removePrefix("ota_progress=").toIntOrNull()
                             )
                     }
-                    // Forward find-phone / music events (ignore pure write-echo ACKs of our own cmds)
+                    // Forward find-phone / music / alarm events (ignore pure write-echo ACKs of our own cmds)
                     if (msg in listOf(
                             Protocol.EVT_FIND_PHONE,
                             Protocol.EVT_FIND_PHONE_STOP,
                             Protocol.EVT_MUSIC_TOGGLE,
                             Protocol.EVT_MUSIC_NEXT,
                             Protocol.EVT_MUSIC_PREV,
+                            Protocol.EVT_ALARM,
                         )
                     ) {
                         onControlEvent?.invoke(msg)
@@ -544,6 +585,8 @@ class WatchBleManager(private val context: Context) {
         controlChar = null
         batteryChar = null
         stepsChar = null
+        distanceChar = null
+        caloriesChar = null
         _state.value = _state.value.copy(connected = false, connecting = false)
     }
 
@@ -592,5 +635,7 @@ class WatchBleManager(private val context: Context) {
         val g = gatt ?: return
         batteryChar?.let { g.readCharacteristic(it) }
         stepsChar?.let { g.readCharacteristic(it) }
+        distanceChar?.let { g.readCharacteristic(it) }
+        caloriesChar?.let { g.readCharacteristic(it) }
     }
 }

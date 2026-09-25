@@ -10,6 +10,8 @@ object Protocol {
     val CHAR_CONTROL: UUID = UUID.fromString("b31cb75e-410c-29ba-0b45-9da7834df66e")
     val CHAR_BATTERY: UUID = UUID.fromString("12345678-90ab-cdef-1234-567890abcdef")
     val CHAR_STEPS: UUID = UUID.fromString("fedcba98-7654-3210-fedc-ba9876543210")
+    val CHAR_DISTANCE: UUID = UUID.fromString("a1715cd1-0304-4b5c-b24a-111213141516")
+    val CHAR_CALORIES: UUID = UUID.fromString("b2715cda-0506-4d5e-c35b-212223242526")
 
     const val FLAG_HAS_DATA = 0x01
     const val FLAG_HAS_UNREAD = 0x02
@@ -53,6 +55,26 @@ object Protocol {
         return v
     }
 
+    /** Distance in whole meters (uint32 LE). */
+    fun parseDistanceM(data: ByteArray): Long? {
+        if (data.size < 4) return null
+        var v = 0L
+        for (i in 0 until 4) {
+            v = v or ((data[i].toLong() and 0xFF) shl (8 * i))
+        }
+        return v
+    }
+
+    /** Calories in deci-kcal (uint32 LE, kcal × 10). Returns kcal as Double. */
+    fun parseCaloriesKcal(data: ByteArray): Double? {
+        if (data.size < 4) return null
+        var v = 0L
+        for (i in 0 until 4) {
+            v = v or ((data[i].toLong() and 0xFF) shl (8 * i))
+        }
+        return v / 10.0
+    }
+
     // Phone → watch
     fun cmdWifi(on: Boolean) = if (on) "wifi_on" else "wifi_off"
     fun cmdScreen(on: Boolean) = if (on) "screen_on" else "screen_off"
@@ -66,4 +88,5 @@ object Protocol {
     const val EVT_MUSIC_TOGGLE = "music_toggle"
     const val EVT_MUSIC_NEXT = "music_next"
     const val EVT_MUSIC_PREV = "music_prev"
+    const val EVT_ALARM = "alarm"
 }

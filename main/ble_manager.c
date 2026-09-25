@@ -35,9 +35,13 @@ static uint16_t s_notification_handle;
 static uint16_t s_control_handle;
 static uint16_t s_battery_handle;
 static uint16_t s_steps_handle;
+static uint16_t s_distance_handle;
+static uint16_t s_calories_handle;
 
 static uint8_t s_battery_val = 0;
 static uint32_t s_steps_val = 0;
+static uint32_t s_distance_val = 0;
+static uint32_t s_calories_val = 0;
 static uint8_t s_addr_type;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool s_ble_connected = false;
@@ -57,6 +61,8 @@ static bool s_notif_subscribed = false;
 static bool s_control_subscribed = false;
 static bool s_battery_subscribed = false;
 static bool s_steps_subscribed = false;
+static bool s_distance_subscribed = false;
+static bool s_calories_subscribed = false;
 
 static const ble_uuid128_t SMARTWATCH_SERVICE_UUID =
     BLE_UUID128_INIT(0x8d, 0x17, 0x6a, 0x59, 0x10, 0x6f, 0x4b, 0x16,
@@ -77,6 +83,16 @@ static const ble_uuid128_t BATTERY_CHAR_UUID =
 static const ble_uuid128_t STEPS_CHAR_UUID =
     BLE_UUID128_INIT(0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe,
                      0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe);
+
+/* Distance: a1715cd1-0304-4b5c-b24a-111213141516 (uint32 meters, R/N) */
+static const ble_uuid128_t DISTANCE_CHAR_UUID =
+    BLE_UUID128_INIT(0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x4a, 0xb2,
+                     0x5c, 0x4b, 0x04, 0x03, 0xd1, 0x5c, 0x71, 0xa1);
+
+/* Calories: b2715cda-0506-4d5e-c35b-212223242526 (uint32 deci-kcal, R/N) */
+static const ble_uuid128_t CALORIES_CHAR_UUID =
+    BLE_UUID128_INIT(0x26, 0x25, 0x24, 0x23, 0x22, 0x21, 0x5b, 0xc3,
+                     0x5e, 0x4d, 0x06, 0x05, 0xda, 0x5c, 0x71, 0xb2);
 
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -243,6 +259,16 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
+        if (attr_handle == s_distance_handle) {
+            int rc = os_mbuf_append(ctxt->om, &s_distance_val, sizeof(s_distance_val));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
+        if (attr_handle == s_calories_handle) {
+            int rc = os_mbuf_append(ctxt->om, &s_calories_val, sizeof(s_calories_val));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
         ESP_LOGW(TAG, "  Read from unknown handle");
         return BLE_ATT_ERR_ATTR_NOT_FOUND;
     }
@@ -300,6 +326,18 @@ static const struct ble_gatt_chr_def gatt_svr_chrs[] = {
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
         .val_handle = &s_steps_handle,
     },
+    {
+        .uuid = &DISTANCE_CHAR_UUID.u,
+        .access_cb = gatt_svr_chr_access,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+        .val_handle = &s_distance_handle,
+    },
+    {
+        .uuid = &CALORIES_CHAR_UUID.u,
+        .access_cb = gatt_svr_chr_access,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+        .val_handle = &s_calories_handle,
+    },
     {0},
 };
 
@@ -336,6 +374,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             s_control_subscribed = false;
             s_battery_subscribed = false;
             s_steps_subscribed = false;
+            s_distance_subscribed = false;
+            s_calories_subscribed = false;
             ble_app_advertise();
             break;
         case BLE_GAP_EVENT_ADV_COMPLETE:
@@ -358,6 +398,10 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
                 s_battery_subscribed = now_on;
             } else if (event->subscribe.attr_handle == s_steps_handle) {
                 s_steps_subscribed = now_on;
+            } else if (event->subscribe.attr_handle == s_distance_handle) {
+                s_distance_subscribed = now_on;
+            } else if (event->subscribe.attr_handle == s_calories_handle) {
+                s_calories_subscribed = now_on;
             }
             break;
         }
@@ -663,6 +707,36 @@ esp_err_t ble_manager_update_steps(uint32_t steps) {
             return ESP_ERR_NO_MEM;
         }
         ble_gatts_notify_custom(s_conn_handle, s_steps_handle, om);
+    }
+    return ESP_OK;
+}
+
+esp_err_t ble_manager_update_distance(uint32_t meters) {
+    if (s_distance_val == meters) {
+        return ESP_OK;
+    }
+    s_distance_val = meters;
+    if (s_ble_connected && s_distance_subscribed) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(&s_distance_val, sizeof(s_distance_val));
+        if (!om) {
+            return ESP_ERR_NO_MEM;
+        }
+        ble_gatts_notify_custom(s_conn_handle, s_distance_handle, om);
+    }
+    return ESP_OK;
+}
+
+esp_err_t ble_manager_update_calories(uint32_t deci_kcal) {
+    if (s_calories_val == deci_kcal) {
+        return ESP_OK;
+    }
+    s_calories_val = deci_kcal;
+    if (s_ble_connected && s_calories_subscribed) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(&s_calories_val, sizeof(s_calories_val));
+        if (!om) {
+            return ESP_ERR_NO_MEM;
+        }
+        ble_gatts_notify_custom(s_conn_handle, s_calories_handle, om);
     }
     return ESP_OK;
 }

@@ -75,6 +75,12 @@ class WatchViewModel(
                 // Service may also be listening; dual-dispatch is fine.
                 WatchLinkService.instance?.let { /* already hooked via attach */ }
             }
+            Protocol.EVT_ALARM -> {
+                _ui.value = _ui.value.copy(
+                    history = (_ui.value.history + "watch: $cmd").takeLast(100),
+                    toast = "Alarm from watch",
+                )
+            }
         }
     }
 

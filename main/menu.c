@@ -2,6 +2,7 @@
 #include "display.h"
 #include "watchfaces.h"
 #include "settings.h"
+#include "alarm.h"
 #include "esp_log.h"
 #include <stdio.h>
 #include <sys/time.h>
@@ -54,6 +55,11 @@ typedef enum {
     SETTINGS_MOTION_THRESHOLD = 0,
     SETTINGS_SCREEN_TIMEOUT,
     SETTINGS_BRIGHTNESS,
+    SETTINGS_TIME_FORMAT,
+    SETTINGS_TEMP_UNIT,
+    SETTINGS_ALARM_TOGGLE,
+    SETTINGS_ALARM_HOUR,
+    SETTINGS_ALARM_MIN,
     SETTINGS_TIME_SYNC,
     SETTINGS_RESET,
     SETTINGS_REBOOT,
@@ -126,7 +132,6 @@ static int notif_max_scroll(void) {
     return (n > 3) ? n - 3 : 0;
 }
 
-
 /* Stopwatch state */
 static bool stopwatch_running = false;
 static int64_t stopwatch_start_time = 0;
@@ -136,10 +141,26 @@ static int64_t stopwatch_elapsed_time = 0;
 static int16_t motion_threshold_editable = 100;
 static int16_t screen_timeout_editable = 3;
 static int16_t brightness_editable = 128;
+static int time_format_editable = 0; /* 0=24h, 1=12h */
+static int temp_unit_editable = 0;   /* 0=C, 1=F */
+static int alarm_hour_editable = 7;
+static int alarm_min_editable = 0;
+static bool alarm_enabled_editable = false;
+
+int menu_get_time_format(void) {
+    return time_format_editable;
+}
+
+int menu_get_temp_unit(void) {
+    return temp_unit_editable;
+}
 
 void menu_init(void) {
     // Load initial settings
     settings_load(&motion_threshold_editable, &screen_timeout_editable, (int*)&current_watchface, &brightness_editable);
+    settings_load_units(&time_format_editable, &temp_unit_editable);
+    alarm_init();
+    alarm_get(&alarm_hour_editable, &alarm_min_editable, &alarm_enabled_editable);
     // Apply loaded brightness
     esp_err_t err = sh1106_set_contrast((uint8_t)brightness_editable);
     if (err != ESP_OK) {
@@ -195,6 +216,8 @@ void menu_check_timeout(int32_t current_time_s) {
         ESP_LOGI(TAG, "Menu timeout - returning to watch");
         if (editing_mode && current_setting != SETTINGS_RESET) {
             settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+            settings_save_units(time_format_editable, temp_unit_editable);
+            alarm_set(alarm_hour_editable, alarm_min_editable, alarm_enabled_editable);
         }
         current_menu = MENU_WATCH;
         editing_mode = false;
@@ -247,9 +270,11 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
         bool is_selected = (i == current_sensor);
         
         switch (i) {
-            case SENSOR_TEMP:
-                snprintf(buf, sizeof(buf), "Temp: %.2f C", temp);
+            case SENSOR_TEMP: {
+                float t = temp_unit_editable ? (temp * 9.0f / 5.0f + 32.0f) : temp;
+                snprintf(buf, sizeof(buf), "Temp: %.2f %c", t, temp_unit_editable ? 'F' : 'C');
                 break;
+            }
             case SENSOR_HUMIDITY:
                 snprintf(buf, sizeof(buf), "Humidity: %.1f%%", hum);
                 break;
@@ -338,6 +363,40 @@ static void render_settings_menu(void) {
                     draw_menu_item(y_pos, buf, is_selected);
                 }
                 break;
+            case SETTINGS_TIME_FORMAT:
+                snprintf(buf, sizeof(buf), "Time: %s", time_format_editable ? "12h" : "24h");
+                draw_menu_item(y_pos, buf, is_selected);
+                break;
+            case SETTINGS_TEMP_UNIT:
+                snprintf(buf, sizeof(buf), "Temp: %s", temp_unit_editable ? "F" : "C");
+                draw_menu_item(y_pos, buf, is_selected);
+                break;
+            case SETTINGS_ALARM_TOGGLE:
+                snprintf(buf, sizeof(buf), "Alarm: %s", alarm_enabled_editable ? "ON" : "OFF");
+                draw_menu_item(y_pos, buf, is_selected);
+                break;
+            case SETTINGS_ALARM_HOUR:
+                if (editing_mode && is_selected) {
+                    snprintf(buf, sizeof(buf), "Alm Hr: [%02d]", alarm_hour_editable);
+                    fb_fill_rect(0, y_pos, DISP_WIDTH, 10, 1);
+                    fb_draw_text_ex(2, y_pos + 1, buf, 0, -1);
+                    fb_draw_text(100, y_pos + 1, "<>");
+                } else {
+                    snprintf(buf, sizeof(buf), "Alm Hr: %02d", alarm_hour_editable);
+                    draw_menu_item(y_pos, buf, is_selected);
+                }
+                break;
+            case SETTINGS_ALARM_MIN:
+                if (editing_mode && is_selected) {
+                    snprintf(buf, sizeof(buf), "Alm Min: [%02d]", alarm_min_editable);
+                    fb_fill_rect(0, y_pos, DISP_WIDTH, 10, 1);
+                    fb_draw_text_ex(2, y_pos + 1, buf, 0, -1);
+                    fb_draw_text(100, y_pos + 1, "<>");
+                } else {
+                    snprintf(buf, sizeof(buf), "Alm Min: %02d", alarm_min_editable);
+                    draw_menu_item(y_pos, buf, is_selected);
+                }
+                break;
             case SETTINGS_TIME_SYNC:
                 draw_menu_item(y_pos, "Time Sync", is_selected);
                 break;
@@ -389,7 +448,8 @@ static void render_weather_menu(void) {
     
     weather_data_t w = weather_get_current();
     if (w.valid) {
-        snprintf(buf, sizeof(buf), "Temp: %.1f C", w.temp_c);
+        float wt = temp_unit_editable ? (w.temp_c * 9.0f / 5.0f + 32.0f) : w.temp_c;
+        snprintf(buf, sizeof(buf), "Temp: %.1f %c", wt, temp_unit_editable ? 'F' : 'C');
         fb_draw_text(0, 15, buf);
 
         fb_draw_wx_icon(112, 14, w.weather_code);
@@ -762,6 +822,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 if (editing_mode) {
                     editing_mode = false;
                     settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+                    settings_save_units(time_format_editable, temp_unit_editable);
+                    alarm_set(alarm_hour_editable, alarm_min_editable, alarm_enabled_editable);
                 } else {
                     current_menu = MENU_ROOT;
                 }
@@ -810,6 +872,10 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 if (cerr != ESP_OK) {
                     ESP_LOGW(TAG, "set_contrast failed: %s", esp_err_to_name(cerr));
                 }
+            } else if (current_setting == SETTINGS_ALARM_HOUR) {
+                alarm_hour_editable = (alarm_hour_editable + 1) % 24;
+            } else if (current_setting == SETTINGS_ALARM_MIN) {
+                alarm_min_editable = (alarm_min_editable + 1) % 60;
             } else if (current_setting == SETTINGS_RESET) {
                 editing_mode = false; // cancel confirm
             }
@@ -848,6 +914,10 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 if (cerr != ESP_OK) {
                     ESP_LOGW(TAG, "set_contrast failed: %s", esp_err_to_name(cerr));
                 }
+            } else if (current_setting == SETTINGS_ALARM_HOUR) {
+                alarm_hour_editable = (alarm_hour_editable + 23) % 24;
+            } else if (current_setting == SETTINGS_ALARM_MIN) {
+                alarm_min_editable = (alarm_min_editable + 59) % 60;
             } else if (current_setting == SETTINGS_RESET) {
                 editing_mode = false; // cancel confirm
             }
@@ -937,6 +1007,15 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else if (current_setting == SETTINGS_TIME_SYNC) {
                 wifi_sync_time_async();
                 current_menu = MENU_SYNC_WAIT;
+            } else if (current_setting == SETTINGS_TIME_FORMAT) {
+                time_format_editable = time_format_editable ? 0 : 1;
+                settings_save_units(time_format_editable, temp_unit_editable);
+            } else if (current_setting == SETTINGS_TEMP_UNIT) {
+                temp_unit_editable = temp_unit_editable ? 0 : 1;
+                settings_save_units(time_format_editable, temp_unit_editable);
+            } else if (current_setting == SETTINGS_ALARM_TOGGLE) {
+                alarm_enabled_editable = !alarm_enabled_editable;
+                alarm_set(alarm_hour_editable, alarm_min_editable, alarm_enabled_editable);
             } else if (current_setting == SETTINGS_REBOOT) {
                 ESP_LOGI(TAG, "Reboot requested");
                 esp_restart();
@@ -958,6 +1037,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 if (settings_reset() == ESP_OK) {
                     settings_load(&motion_threshold_editable, &screen_timeout_editable,
                                   (int*)&current_watchface, &brightness_editable);
+                    settings_load_units(&time_format_editable, &temp_unit_editable);
+                    alarm_set(7, 0, false);
+                    alarm_get(&alarm_hour_editable, &alarm_min_editable, &alarm_enabled_editable);
                     if (sh1106_set_contrast((uint8_t)brightness_editable) != ESP_OK) {
                         ESP_LOGW(TAG, "contrast restore failed");
                     }
@@ -967,6 +1049,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else {
                 editing_mode = false;
                 settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+                settings_save_units(time_format_editable, temp_unit_editable);
+                alarm_set(alarm_hour_editable, alarm_min_editable, alarm_enabled_editable);
             }
         } else if (current_menu == MENU_SENSOR_DATA) {
             if (current_sensor == SENSOR_BACK) {

@@ -207,6 +207,19 @@ private fun DashboardSection(state: UiState, vm: WatchViewModel) {
                 Text("Status", style = MaterialTheme.typography.titleMedium)
                 Text("Battery: ${state.ble.battery?.let { "$it%" } ?: "—"}")
                 Text("Steps: ${state.ble.steps?.toString() ?: "—"}")
+                Text(
+                    "Distance: ${
+                        state.ble.distanceM?.let { m ->
+                            if (m >= 1000) "%.2f km".format(m / 1000.0) else "$m m"
+                        } ?: "—"
+                    }",
+                )
+                Text(
+                    "Calories: ${
+                        state.ble.caloriesKcal?.let { "%.1f kcal".format(it) } ?: "—"
+                    }",
+                )
+                state.ble.mtu?.let { Text("MTU: $it") }
                 state.ble.lastNotification?.let { n ->
                     Text("Last notif: ${n.title} — ${n.body}")
                 }
@@ -323,6 +336,7 @@ private fun DashboardSection(state: UiState, vm: WatchViewModel) {
                 Text(
                     "Find Phone → rings this phone.\n" +
                         "Music Control → play/next/prev media keys.\n" +
+                        "Alarm → shows a toast + event log entry.\n" +
                     "Keep this app open (or the link notification) for events.",
                     style = MaterialTheme.typography.bodySmall,
                 )

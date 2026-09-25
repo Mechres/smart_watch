@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "esp_sleep.h"
 #include "esp_pm.h"
+#include "esp_ota_ops.h"
 
 #include "display.h"
 #include "watchfaces.h"
@@ -28,6 +29,7 @@
 #include "weather.h"
 #include "ble_manager.h"
 #include "ota_updater.h"
+#include "alarm.h"
 
 static const char *TAG = "SmartWatch";
 
@@ -313,6 +315,18 @@ static void main_task(void *arg) {
         // Check for midnight reset (uses RTC time)
         pedometer_check_midnight(&timeinfo);
 
+        /* Daily alarm (edge-triggered, once per day). */
+        if (alarm_check(&timeinfo)) {
+            menu_show_notification("Alarm", "Wake up!");
+            last_motion_time_s = current_mono_s;
+            if (!screen_on) {
+                sh1106_display_on();
+                screen_on = true;
+                gesture_notify_screen_state(true);
+            }
+            ble_manager_send_command("alarm");
+        }
+
         // Calculate inactivity time and update power mode
         uint32_t inactivity_secs = (current_mono_s - last_motion_time_s);
         power_update_mode(inactivity_secs);
@@ -371,6 +385,8 @@ static void main_task(void *arg) {
         // Update BLE characteristics only while connected
         if (ble_manager_is_connected()) {
             ble_manager_update_steps((uint32_t)pedometer_get_steps());
+            ble_manager_update_distance((uint32_t)pedometer_get_distance_m());
+            ble_manager_update_calories((uint32_t)(pedometer_get_calories_kcal() * 10.0f));
         }
 
         int16_t ax = 0, ay = 0, az = 0;
@@ -533,6 +549,13 @@ void app_main(void) {
     if (!s_ble_evt_queue) {
         ESP_LOGE(TAG, "Failed to create BLE event queue");
         return;
+    }
+
+    /* OTA rollback: mark this image valid once it boots far enough to run.
+     * If the image crashes before this point, the bootloader reverts. */
+    esp_err_t ota_valid_err = esp_ota_mark_app_valid_cancel_rollback();
+    if (ota_valid_err != ESP_OK) {
+        ESP_LOGD(TAG, "OTA mark-valid: %s", esp_err_to_name(ota_valid_err));
     }
 
     ESP_LOGI(TAG, "Configuring Power Management");

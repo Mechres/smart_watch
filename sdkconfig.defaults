@@ -1,0 +1,4 @@
+# Project defaults (applied on top of sdkconfig on next build).
+# Enables OTA rollback protection: if the new image crashes, bootloader
+# reverts to the previous working slot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

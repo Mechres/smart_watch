@@ -15,6 +15,7 @@ idf_component_register(
         "ble_manager.c"
         "gesture.c"
         "ota_updater.c"
+        "alarm.c"
     INCLUDE_DIRS
         "."
     REQUIRES

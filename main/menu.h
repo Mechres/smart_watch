@@ -28,6 +28,10 @@ int menu_get_min_refresh_ms(void);
 /* Getters for settings managed by the menu */
 int16_t menu_get_motion_threshold(void);
 int16_t menu_get_screen_timeout(void);
+/* 0=24h, 1=12h */
+int menu_get_time_format(void);
+/* 0=Celsius, 1=Fahrenheit */
+int menu_get_temp_unit(void);
 
 /* Show a notification on the screen */
 void menu_show_notification(const char *title, const char *body);

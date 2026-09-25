@@ -10,11 +10,12 @@ Two tools that speak the watch BLE protocol (`PROTOCOL.md`):
 ## Features (Android)
 
 - Scan / connect / disconnect **Hikaboshi**
-- Live **battery** + **steps**
+- Live **battery** + **steps** + **distance** + **calories** (MTU 256 negotiated for full reads)
 - Send **notifications** (`Title|Body`)
 - **Time sync**, **weather push**, **screen/wifi** toggles
 - **OTA** URL push with status/progress display
 - **Find phone** — rings when the watch sends `find_phone`
+- **Alarm** — toast + log entry when the watch sends `alarm`
 - **Music control** — media keys for `music_*` events from the watch
 - Foreground link service so events work while backgrounded
 - Event log

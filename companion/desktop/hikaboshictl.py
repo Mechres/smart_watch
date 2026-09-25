@@ -10,12 +10,13 @@ Examples:
   python hikaboshictl.py notify "Title" "Body text"
   python hikaboshictl.py battery
   python hikaboshictl.py steps
+  python hikaboshictl.py fitness
   python hikaboshictl.py time-sync
   python hikaboshictl.py weather 24.5 1
   python hikaboshictl.py screen on
   python hikaboshictl.py wifi on
   python hikaboshictl.py ota https://example.com/smart_watch.bin
-  python hikaboshictl.py watch          # stream battery/steps/control notifies
+  python hikaboshictl.py watch          # stream battery/steps/distance/calories/control notifies
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ NOTIFY_UUID = "2480757d-4f07-9fa5-0f48-e4125a9bdab8"
 CONTROL_UUID = "b31cb75e-410c-29ba-0b45-9da7834df66e"
 BATTERY_UUID = "12345678-90ab-cdef-1234-567890abcdef"
 STEPS_UUID = "fedcba98-7654-3210-fedc-ba9876543210"
+DISTANCE_UUID = "a1715cd1-0304-4b5c-b24a-111213141516"
+CALORIES_UUID = "b2715cda-0506-4d5e-c35b-212223242526"
 
 
 async def find_device(timeout: float = 10.0) -> BLEDevice:
@@ -111,6 +114,8 @@ async def cmd_connect(args: argparse.Namespace) -> None:
         for uuid, label in (
             (BATTERY_UUID, "battery"),
             (STEPS_UUID, "steps"),
+            (DISTANCE_UUID, "distance"),
+            (CALORIES_UUID, "calories"),
             (NOTIFY_UUID, "notification"),
             (CONTROL_UUID, "control"),
         ):
@@ -120,6 +125,10 @@ async def cmd_connect(args: argparse.Namespace) -> None:
                     print(f"  {label}: {data[0]}%")
                 elif uuid == STEPS_UUID:
                     print(f"  {label}: {struct.unpack('<I', data[:4])[0]}")
+                elif uuid == DISTANCE_UUID:
+                    print(f"  {label}: {struct.unpack('<I', data[:4])[0]} m")
+                elif uuid == CALORIES_UUID:
+                    print(f"  {label}: {struct.unpack('<I', data[:4])[0] / 10.0:.1f} kcal")
                 elif uuid == NOTIFY_UUID:
                     print(f"  {label}: {parse_notification(data)}")
                 else:
@@ -152,6 +161,18 @@ async def cmd_steps(args: argparse.Namespace) -> None:
     async def go(client: BleakClient) -> None:
         data = await client.read_gatt_char(STEPS_UUID)
         print(f"Steps: {struct.unpack('<I', data[:4])[0]}")
+
+    await with_client(args, go)
+
+
+async def cmd_fitness(args: argparse.Namespace) -> None:
+    async def go(client: BleakClient) -> None:
+        steps = struct.unpack("<I", (await client.read_gatt_char(STEPS_UUID))[:4])[0]
+        dist_m = struct.unpack("<I", (await client.read_gatt_char(DISTANCE_UUID))[:4])[0]
+        kcal10 = struct.unpack("<I", (await client.read_gatt_char(CALORIES_UUID))[:4])[0]
+        print(f"Steps: {steps}")
+        print(f"Distance: {dist_m} m ({dist_m / 1000.0:.2f} km)")
+        print(f"Calories: {kcal10 / 10.0:.1f} kcal")
 
     await with_client(args, go)
 
@@ -219,6 +240,15 @@ async def cmd_watch(args: argparse.Namespace) -> None:
         if len(data) >= 4:
             print(f"[steps] {struct.unpack('<I', bytes(data[:4]))[0]}")
 
+    def on_distance(_, data: bytearray) -> None:
+        if len(data) >= 4:
+            m = struct.unpack("<I", bytes(data[:4]))[0]
+            print(f"[distance] {m} m")
+
+    def on_calories(_, data: bytearray) -> None:
+        if len(data) >= 4:
+            print(f"[calories] {struct.unpack('<I', bytes(data[:4]))[0] / 10.0:.1f} kcal")
+
     def on_control(_, data: bytearray) -> None:
         print(f"[control] {data.decode('utf-8', errors='replace')!r}")
 
@@ -231,6 +261,8 @@ async def cmd_watch(args: argparse.Namespace) -> None:
     async def go(client: BleakClient) -> None:
         await client.start_notify(BATTERY_UUID, on_battery)
         await client.start_notify(STEPS_UUID, on_steps)
+        await client.start_notify(DISTANCE_UUID, on_distance)
+        await client.start_notify(CALORIES_UUID, on_calories)
         await client.start_notify(CONTROL_UUID, on_control)
         await client.start_notify(NOTIFY_UUID, on_notify_chr)
         print("Streaming notifies — Ctrl-C to stop")
@@ -240,7 +272,7 @@ async def cmd_watch(args: argparse.Namespace) -> None:
         except asyncio.CancelledError:
             pass
         finally:
-            for uuid in (BATTERY_UUID, STEPS_UUID, CONTROL_UUID, NOTIFY_UUID):
+            for uuid in (BATTERY_UUID, STEPS_UUID, DISTANCE_UUID, CALORIES_UUID, CONTROL_UUID, NOTIFY_UUID):
                 try:
                     await client.stop_notify(uuid)
                 except Exception:
@@ -264,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("battery")
     sub.add_parser("steps")
+    sub.add_parser("fitness", help="Steps + distance + calories")
     sub.add_parser("time-sync")
 
     w = sub.add_parser("weather")
@@ -289,6 +322,7 @@ async def main_async(argv: list[str] | None = None) -> None:
         "notify": cmd_notify,
         "battery": cmd_battery,
         "steps": cmd_steps,
+        "fitness": cmd_fitness,
         "time-sync": cmd_time_sync,
         "weather": cmd_weather,
         "screen": cmd_screen,

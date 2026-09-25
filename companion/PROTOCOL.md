@@ -14,6 +14,8 @@ Device name: **Hikaboshi**
 | Control | `b31cb75e-410c-29ba-0b45-9da7834df66e` | Read, Write, Notify |
 | Battery | `12345678-90ab-cdef-1234-567890abcdef` | Read, Notify |
 | Steps | `fedcba98-7654-3210-fedc-ba9876543210` | Read, Notify |
+| Distance | `a1715cd1-0304-4b5c-b24a-111213141516` | Read, Notify |
+| Calories | `b2715cda-0506-4d5e-c35b-212223242526` | Read, Notify |
 
 ### Notification write (phone → watch)
 
@@ -40,6 +42,14 @@ bytes 3..: title bytes, then body bytes
 
 `uint32` native endian (little-endian on ESP32).
 
+### Distance
+
+`uint32` LE whole meters (stride 0.75 m/step estimate).
+
+### Calories
+
+`uint32` LE deci-kcal (kcal × 10, ~0.04 kcal/step estimate).
+
 ## Control commands (phone → watch write)
 
 | Command | Effect |
@@ -56,13 +66,15 @@ bytes 3..: title bytes, then body bytes
 |---------|---------|
 | `find_phone` / `find_phone_stop` | Ring / stop ringing the phone |
 | `music_toggle` / `music_next` / `music_prev` | Media control |
+| `alarm` | Daily alarm fired on watch |
 | `ota_status=start\|wifi_fail\|fail\|done` | OTA lifecycle |
 | `ota_progress=NN` | OTA percent (0,10,...,100) |
 
-The watch also echoes written payloads as Notify on the same characteristic (write ACK).
+The watch also echoes written payloads as Notify on the same characteristic (write ACK,
+only after the client subscribes to avoid breaking service discovery).
 
 ## Advertising
 
-- Fast advertising while active; stops after ~5 min without a connection.
+- Slow advertising (1000–1500 ms interval) while active; stops after ~5 min without a connection.
 - Restarts when the user wakes the watch (raise wrist / button).
 - Wake the watch before scanning if connect fails.

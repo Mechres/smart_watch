@@ -39,6 +39,9 @@ void ble_manager_housekeeping(bool user_active);
 
 esp_err_t ble_manager_update_battery(uint8_t level);
 esp_err_t ble_manager_update_steps(uint32_t steps);
+/* Distance in whole meters (uint32 LE). Calories in deci-kcal (kcal*10, uint32 LE). */
+esp_err_t ble_manager_update_distance(uint32_t meters);
+esp_err_t ble_manager_update_calories(uint32_t deci_kcal);
 
 #ifdef __cplusplus
 }

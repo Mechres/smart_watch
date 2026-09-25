@@ -19,6 +19,9 @@
 #define DEBOUNCE_POLL_MS_ACTIVE 20
 #define DEBOUNCE_POLL_MS_IDLE   100
 
+/* OK long-press threshold (ms) */
+#define LONG_PRESS_MS 800
+
 static const char *TAG = "input";
 static QueueHandle_t button_queue = NULL;
 static TaskHandle_t s_notify_task_handle = NULL;
@@ -32,6 +35,8 @@ void input_register_notify_task(TaskHandle_t task_handle) {
  * Polls at 20 ms while active; backs off to 100 ms in light sleep. */
 static void debounce_task(void *arg) {
     bool last_up = false, last_down = false, last_ok = false;
+    uint32_t ok_press_tick = 0;
+    bool ok_long_sent = false;
 
     while (1) {
         uint32_t poll_ms = (power_get_mode() == POWER_ACTIVE)
@@ -68,6 +73,23 @@ static void debounce_task(void *arg) {
             }
         }
         if (ok_now && !last_ok) {
+            /* Press start: arm long-press timer, short press fires on release */
+            ok_press_tick = xTaskGetTickCount();
+            ok_long_sent = false;
+        }
+        if (ok_now && last_ok && !ok_long_sent &&
+            (xTaskGetTickCount() - ok_press_tick) >= pdMS_TO_TICKS(LONG_PRESS_MS)) {
+            button_event_t event = BTN_OK_LONG;
+            if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
+                ESP_LOGD(TAG, "OK button long-press");
+                event_generated = true;
+            } else {
+                s_input_dropped++;
+                ESP_LOGW(TAG, "OK long-press dropped (queue full, total=%u)", s_input_dropped);
+            }
+            ok_long_sent = true;
+        }
+        if (!ok_now && last_ok && !ok_long_sent) {
             button_event_t event = BTN_OK_PRESS;
             if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
                 ESP_LOGD(TAG, "OK button pressed");

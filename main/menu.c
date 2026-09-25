@@ -94,6 +94,38 @@ static uint8_t saved_brightness = 128;
 /* Notification state */
 static char notif_title[32];
 static char notif_body[128];
+static int notif_scroll = 0;
+static time_t notif_time = 0;
+
+/* Word-wrap body into 21-char lines. Returns line count. */
+#define NOTIF_MAX_LINES 16
+static int notif_wrap_lines(char lines[][22]) {
+    int n = 0;
+    const char *p = notif_body;
+    while (*p && n < NOTIF_MAX_LINES) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        size_t remaining = strlen(p);
+        size_t take = remaining > 21 ? 21 : remaining;
+        if (remaining > 21) {
+            size_t ws = take;
+            while (ws > 0 && p[ws - 1] != ' ') ws--;
+            if (ws > 8) take = ws;
+        }
+        memcpy(lines[n], p, take);
+        lines[n][take] = '\0';
+        n++;
+        p += take;
+    }
+    return n;
+}
+
+static int notif_max_scroll(void) {
+    char lines[NOTIF_MAX_LINES][22];
+    int n = notif_wrap_lines(lines);
+    return (n > 3) ? n - 3 : 0;
+}
+
 
 /* Stopwatch state */
 static bool stopwatch_running = false;
@@ -179,6 +211,8 @@ void menu_show_notification(const char *title, const char *body) {
     // Ensure null termination
     notif_title[sizeof(notif_title) - 1] = '\0';
     notif_body[sizeof(notif_body) - 1] = '\0';
+    notif_scroll = 0;
+    notif_time = time(NULL);
     
     current_menu = MENU_NOTIFICATION;
     // Reset activity timer handled by caller (main.c updates last_motion_time_s, 
@@ -357,7 +391,9 @@ static void render_weather_menu(void) {
     if (w.valid) {
         snprintf(buf, sizeof(buf), "Temp: %.1f C", w.temp_c);
         fb_draw_text(0, 15, buf);
-        
+
+        fb_draw_wx_icon(112, 14, w.weather_code);
+
         const char *desc = weather_get_desc(w.weather_code);
         snprintf(buf, sizeof(buf), "%s", desc);
         fb_draw_text(0, 27, buf);
@@ -391,12 +427,10 @@ static void render_stopwatch_menu(void) {
     int minutes = total_seconds / 60;
 
     snprintf(buf, sizeof(buf), "%02d:%02d.%d", minutes, seconds, ms);
-    
-    // Large centered text
-    int len = strlen(buf);
-    int char_width = 6 * 2;
-    int x = (DISP_WIDTH - (len * char_width)) / 2;
-    fb_draw_text_scaled(x, 25, buf, 2);
+
+    // Large 7-seg display, centered
+    int bw = fb_big_text_width(buf);
+    fb_draw_big_text((DISP_WIDTH - bw) / 2, 16, buf, 1);
 
     // Instructions
     if (stopwatch_running) {
@@ -459,41 +493,45 @@ static void render_flashlight_menu(void) {
 
 static void render_notification_menu(void) {
     fb_clear();
-    fb_draw_header("NOTIFY");
-    
-    // Title
-    fb_draw_text(0, 12, notif_title);
-    
-    // Body (multi-line rendering, wrap at word boundaries when possible)
+    /* Header carries the received time when the clock is set. */
+    char hbuf[24];
+    struct tm rtm;
+    localtime_r(&notif_time, &rtm);
+    if (rtm.tm_year + 1900 >= 2024)
+        snprintf(hbuf, sizeof(hbuf), "NOTIFY %02d:%02d", rtm.tm_hour, rtm.tm_min);
+    else
+        snprintf(hbuf, sizeof(hbuf), "NOTIFY");
+    fb_draw_header(hbuf);
+
+    // Title (truncate to bar width)
+    char tbuf[22];
+    snprintf(tbuf, sizeof(tbuf), "%.21s", notif_title);
+    fb_draw_text(0, 12, tbuf);
+
+    // Body: 3 visible lines from scroll offset
+    char lines[NOTIF_MAX_LINES][22];
+    int n = notif_wrap_lines(lines);
     int y = 24;
-    const char *p = notif_body;
-
-    while (*p && y < DISP_HEIGHT) {
-        /* Skip leading spaces on continuation lines */
-        while (*p == ' ') p++;
-        if (!*p) break;
-
-        size_t remaining = strlen(p);
-        size_t take = remaining > 21 ? 21 : remaining;
-
-        if (remaining > 21) {
-            /* Prefer wrapping at the last space within the window */
-            size_t ws = take;
-            while (ws > 0 && p[ws - 1] != ' ') ws--;
-            if (ws > 8) { /* only break at word if not a pathological single token */
-                take = ws;
-            }
-        }
-
-        char line[22];
-        memcpy(line, p, take);
-        line[take] = '\0';
-        fb_draw_text(0, y, line);
+    for (int i = notif_scroll; i < n && i < notif_scroll + 3; i++) {
+        fb_draw_text(0, y, lines[i]);
         y += 10;
-        p += take;
     }
 
-    fb_draw_text(0, 54, "[Any Key] Close");
+    if (notif_max_scroll() > 0) {
+        fb_draw_text(0, 54, "[OK]Close");
+        char sbuf[12];
+        int page = notif_scroll + 1;
+        int pages = n - 2;
+        if (page < 1) page = 1;
+        if (page > 99) page = 99;
+        if (pages < 1) pages = 1;
+        if (pages > 99) pages = 99;
+        snprintf(sbuf, sizeof(sbuf), "%d/%d", page, pages);
+        int slen = strlen(sbuf);
+        fb_draw_text(DISP_WIDTH - slen * 6, 54, sbuf);
+    } else {
+        fb_draw_text(0, 54, "[OK] Close");
+    }
 }
 
 static void render_sync_wait(void) {
@@ -543,6 +581,19 @@ static void render_root_menu(void) {
     fb_clear();
     fb_draw_header("MENU");
 
+    /* 8x8 MSB-first glyphs, one per root item. */
+    static const uint8_t ICONS[10][8] = {
+        {0x10,0x10,0x10,0x10,0x38,0x38,0x7C,0x38}, /* Sensors: thermometer */
+        {0x00,0x18,0x3C,0x42,0x42,0x3E,0x00,0x00}, /* Weather: cloud */
+        {0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0x00}, /* Settings: sliders */
+        {0x3C,0x42,0x49,0x49,0x41,0x42,0x3C,0x00}, /* Watchface: clock */
+        {0x18,0x24,0x3C,0x42,0x49,0x41,0x42,0x3C}, /* Stopwatch */
+        {0x70,0x88,0x88,0x70,0x20,0x50,0x88,0x00}, /* Find Phone: magnifier */
+        {0x38,0x28,0x20,0x20,0x20,0x60,0x70,0x00}, /* Music: note */
+        {0x10,0x00,0x38,0x10,0x10,0x10,0x38,0x00}, /* System Info: i */
+        {0x3C,0x42,0x42,0x42,0x24,0x18,0x18,0x00}, /* Flashlight: bulb */
+        {0x10,0x30,0x7E,0x30,0x10,0x00,0x00,0x00}, /* Back: arrow */
+    };
     const char *items[] = {
         "Sensors",
         "Weather",
@@ -565,7 +616,9 @@ static void render_root_menu(void) {
     int y_pos = 12;
     for (int i = start_idx; i < start_idx + 5 && i < item_count; i++) {
         bool is_selected = (i == root_selection);
-        draw_menu_item(y_pos, items[i], is_selected);
+        if (is_selected) fb_fill_rect(0, y_pos, DISP_WIDTH, 10, 1);
+        fb_draw_bitmap(1, y_pos + 1, 8, 8, ICONS[i], is_selected ? 0 : 1);
+        fb_draw_text_ex(11, y_pos + 1, items[i], is_selected ? 0 : 1, -1);
         y_pos += 10;
     }
 
@@ -693,6 +746,39 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
     bool activity = true;
     menu_last_activity_s = current_time_s; // Update activity time
 
+    if (event == BTN_OK_LONG) {
+        /* Long-press OK: one level up (second press exits edit mode first). */
+        switch (current_menu) {
+            case MENU_WATCH:
+                break;
+            case MENU_ROOT:
+            case MENU_NOTIFICATION:
+                current_menu = MENU_WATCH;
+                break;
+            case MENU_SYNC_WAIT:
+                current_menu = MENU_SETTINGS;
+                break;
+            case MENU_SETTINGS:
+                if (editing_mode) {
+                    editing_mode = false;
+                    settings_save(motion_threshold_editable, screen_timeout_editable, current_watchface, brightness_editable);
+                } else {
+                    current_menu = MENU_ROOT;
+                }
+                break;
+            case MENU_FLASHLIGHT:
+                if (sh1106_set_contrast(saved_brightness) != ESP_OK) {
+                    ESP_LOGW(TAG, "flashlight restore failed");
+                }
+                current_menu = MENU_ROOT;
+                break;
+            default:
+                current_menu = MENU_ROOT;
+                break;
+        }
+        return true;
+    }
+
     if (current_menu == MENU_SYNC_WAIT) {
         // Any button press exits sync wait
         current_menu = MENU_SETTINGS;
@@ -708,6 +794,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             find_phone_selection = (find_phone_selection > 0) ? find_phone_selection - 1 : 2;
         } else if (current_menu == MENU_MUSIC_CONTROL) {
             music_selection = (music_selection > 0) ? music_selection - 1 : 3;
+        } else if (current_menu == MENU_NOTIFICATION) {
+            if (notif_scroll > 0) notif_scroll--;
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable += 10;
@@ -739,6 +827,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             find_phone_selection = (find_phone_selection < 2) ? find_phone_selection + 1 : 0;
         } else if (current_menu == MENU_MUSIC_CONTROL) {
             music_selection = (music_selection < 3) ? music_selection + 1 : 0;
+        } else if (current_menu == MENU_NOTIFICATION) {
+            int mx = notif_max_scroll();
+            if (notif_scroll < mx) notif_scroll++;
         } else if (current_menu == MENU_STOPWATCH) {
             if (!stopwatch_running) {
                 stopwatch_elapsed_time = 0; // Reset
@@ -882,7 +973,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 current_menu = MENU_ROOT;
             }
         } else if (current_menu == MENU_NOTIFICATION) {
-             // Any key dismisses notification
+             // OK dismisses (UP/DN scroll)
              current_menu = MENU_WATCH;
         } else if (current_menu == MENU_SYNC_WAIT) {
              // Allow exit from sync wait

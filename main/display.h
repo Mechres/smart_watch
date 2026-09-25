@@ -32,6 +32,14 @@ void fb_draw_text_centered_ex(int y, const char *s, int color, int bg_color);
 void fb_draw_text_centered_scaled(int y, const char *s, int scale);
 void fb_draw_header(const char *title);
 
+/* 12x10 weather glyph for WMO codes (sun/cloud/fog/rain/snow/storm). */
+void fb_draw_wx_icon(int x, int y, int wx_code);
+
+/* 7-segment style big digits (14x24 cell). Supports '0'-'9', ':', '.', ' '. */
+void fb_draw_big_digit(int x, int y, int digit, int color);
+void fb_draw_big_text(int x, int y, const char *s, int color);
+int fb_big_text_width(const char *s);
+
 esp_err_t sh1106_render(void);
 
 /* SH1106 control API */

@@ -34,46 +34,6 @@ static const uint8_t ICON_BT[8]   = {0x10,0x18,0x28,0x48,0x48,0x28,0x18,0x10};
 static const uint8_t ICON_BELL[8] = {0x10,0x38,0x44,0x44,0x44,0x7C,0x10,0x00};
 static const uint8_t ICON_MAIL[8] = {0x7E,0x41,0x5A,0x55,0x55,0x5A,0x41,0x7E};
 
-static void draw_cloud(int x, int y) {
-    fb_fill_circle(x + 3, y + 4, 3, 1);
-    fb_fill_circle(x + 8, y + 3, 4, 1);
-    fb_fill_rect(x + 3, y + 4, 9, 4, 1);
-}
-
-/* 12x10 weather glyph drawn procedurally (no font needed). */
-static void draw_wx_icon(int x, int y, int code) {
-    if (code <= 1) { /* Clear: sun */
-        fb_fill_circle(x + 5, y + 4, 3, 1);
-        fb_draw_line(x + 5, y - 1, x + 5, y + 1, 1);
-        fb_draw_line(x + 5, y + 7, x + 5, y + 9, 1);
-        fb_draw_line(x, y + 4, x + 2, y + 4, 1);
-        fb_draw_line(x + 8, y + 4, x + 10, y + 4, 1);
-    } else if (code <= 3) { /* Cloudy */
-        draw_cloud(x, y);
-    } else if (code == 45 || code == 48) { /* Fog */
-        draw_cloud(x, y - 1);
-        fb_draw_line(x + 1, y + 8, x + 10, y + 8, 1);
-        fb_draw_line(x + 3, y + 10, x + 10, y + 10, 1);
-    } else if (code >= 95) { /* Storm */
-        draw_cloud(x, y - 1);
-        fb_draw_line(x + 6, y + 7, x + 4, y + 9, 1);
-        fb_draw_line(x + 4, y + 9, x + 7, y + 9, 1);
-        fb_draw_line(x + 7, y + 9, x + 5, y + 11, 1);
-    } else if (code >= 71 && code <= 75) { /* Snow */
-        draw_cloud(x, y - 1);
-        fb_set_pixel(x + 3, y + 9, 1);
-        fb_set_pixel(x + 6, y + 10, 1);
-        fb_set_pixel(x + 9, y + 9, 1);
-    } else if ((code >= 51 && code <= 65) || (code >= 80 && code <= 82)) { /* Rain/drizzle */
-        draw_cloud(x, y - 1);
-        fb_draw_line(x + 3, y + 8, x + 2, y + 10, 1);
-        fb_draw_line(x + 6, y + 8, x + 5, y + 10, 1);
-        fb_draw_line(x + 9, y + 8, x + 8, y + 10, 1);
-    } else {
-        draw_cloud(x, y);
-    }
-}
-
 /* Unified 9px header: HH:MM left, BT/alarm/mail icons, battery right.
  * All faces call this first, then lay out content below y=10. */
 static void draw_status_bar(struct tm *timeinfo, int batt_pct) {
@@ -132,42 +92,39 @@ void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int
     draw_status_bar(timeinfo, batt_pct);
     char buf[64];
 
-    // Time: HH:MM big using scaled text (scale 2), colon blinks each second
+    // Time: HH:MM in 7-seg big digits (76px wide), colon blinks each second
     if (timeinfo->tm_sec % 2 == 0)
         snprintf(buf, sizeof(buf), "%02d:%02d", disp_hour(timeinfo->tm_hour), timeinfo->tm_min);
     else
         snprintf(buf, sizeof(buf), "%02d %02d", disp_hour(timeinfo->tm_hour), timeinfo->tm_min);
-    fb_draw_text_centered_scaled(12, buf, 2);
+    fb_draw_big_text(26, 10, buf, 1);
 
     // Seconds tucked to the right of the big digits
     char ssec[4];
     snprintf(ssec, sizeof(ssec), "%02d", timeinfo->tm_sec);
-    fb_draw_text(98, 19, ssec);
+    fb_draw_text(105, 22, ssec);
 
     // Date: Day Mon Year in Turkish
     const char *months_tr[12] = {"Oca","Sub","Mar","Nis","May","Haz","Tem","Agu","Eyl","Eki","Kas","Ara"};
     snprintf(buf, sizeof(buf), "%02d %s %04d", timeinfo->tm_mday, months_tr[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
-    fb_draw_text_centered(30, buf);
-
-    // Separator line
-    fb_draw_line(10, 39, 118, 39, 1);
+    fb_draw_text_centered(36, buf);
 
     // Weather icon + temp/hum lower area
     weather_data_t w = weather_get_current();
     if (w.valid) {
-        draw_wx_icon(0, 42, w.weather_code);
+        fb_draw_wx_icon(0, 44, w.weather_code);
         float wt = disp_temp(w.temp_c);
         snprintf(buf, sizeof(buf), "%.0f%c H:%.0f%%", wt, temp_unit_char(), hum);
-        fb_draw_text(14, 44, buf);
+        fb_draw_text(14, 46, buf);
     } else {
         snprintf(buf, sizeof(buf), "T:%.1f%c H:%.0f%%", disp_temp(temp), temp_unit_char(), hum);
-        fb_draw_text(0, 44, buf);
+        fb_draw_text(0, 46, buf);
     }
 
     // Steps instead of raw accel
     int steps = pedometer_get_steps();
     snprintf(buf, sizeof(buf), "Steps:%d", steps);
-    fb_draw_text(0, 54, buf);
+    fb_draw_text(0, 55, buf);
 
     // Unread notification hint (icon already in status bar)
     ble_notification_t notif;
@@ -231,7 +188,7 @@ void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int1
 
     weather_data_t w = weather_get_current();
     if (w.valid) {
-        draw_wx_icon(70, 44, w.weather_code);
+        fb_draw_wx_icon(70, 44, w.weather_code);
         float wt = disp_temp(w.temp_c);
         snprintf(buf, sizeof(buf), "%.0f%c", wt, temp_unit_char());
         fb_draw_text(84, 47, buf);
@@ -249,16 +206,16 @@ void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int
     char buf[64];
     const char *months_tr[12] = {"Oca","Sub","Mar","Nis","May","Haz","Tem","Agu","Eyl","Eki","Kas","Ara"};
 
-    // Extra large time (scale 3), colon blinks
+    // Extra large 7-seg time (76px wide), colon blinks
     if (timeinfo->tm_sec % 2 == 0)
         snprintf(buf, sizeof(buf), "%02d:%02d", disp_hour(timeinfo->tm_hour), timeinfo->tm_min);
     else
         snprintf(buf, sizeof(buf), "%02d %02d", disp_hour(timeinfo->tm_hour), timeinfo->tm_min);
-    fb_draw_text_centered_scaled(14, buf, 3);
+    fb_draw_big_text(26, 12, buf, 1);
 
     // Date at bottom
     snprintf(buf, sizeof(buf), "%02d %s %04d", timeinfo->tm_mday, months_tr[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
-    fb_draw_text_centered(52, buf);
+    fb_draw_text_centered(50, buf);
 }
 
 /* Compact watchface - all info compact */
@@ -275,7 +232,7 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
 
     // Temperature and humidity + weather icon right
     weather_data_t w = weather_get_current();
-    if (w.valid) draw_wx_icon(114, 22, w.weather_code);
+    if (w.valid) fb_draw_wx_icon(114, 22, w.weather_code);
     snprintf(buf, sizeof(buf), "T:%.1f%c H:%.0f%%", disp_temp(temp), temp_unit_char(), hum);
     fb_draw_text(0, 24, buf);
 
@@ -284,8 +241,8 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
     snprintf(buf, sizeof(buf), "Steps:%d", steps);
     fb_draw_text(0, 36, buf);
 
-    // Day of week
-    const char *days[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    // Day of week (Turkish, ASCII-safe: no glyph for Ç/ğ in 5x7 font)
+    const char *days[7] = {"Paz","Pzt","Sal","Car","Per","Cum","Cmt"};
     snprintf(buf, sizeof(buf), "%s", days[timeinfo->tm_wday]);
     fb_draw_text(0, 48, buf);
 

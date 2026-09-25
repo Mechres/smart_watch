@@ -209,6 +209,98 @@ void fb_draw_header(const char *title) {
     if (title) fb_draw_text_ex(2, 1, title, 0, -1);
 }
 
+static void fb_draw_cloud(int x, int y) {
+    fb_fill_circle(x + 3, y + 4, 3, 1);
+    fb_fill_circle(x + 8, y + 3, 4, 1);
+    fb_fill_rect(x + 3, y + 4, 9, 4, 1);
+}
+
+/* 12x10 weather glyph drawn procedurally (no font needed). */
+void fb_draw_wx_icon(int x, int y, int code) {
+    if (code <= 1) { /* Clear: sun */
+        fb_fill_circle(x + 5, y + 4, 3, 1);
+        fb_draw_line(x + 5, y - 1, x + 5, y + 1, 1);
+        fb_draw_line(x + 5, y + 7, x + 5, y + 9, 1);
+        fb_draw_line(x, y + 4, x + 2, y + 4, 1);
+        fb_draw_line(x + 8, y + 4, x + 10, y + 4, 1);
+    } else if (code <= 3) { /* Cloudy */
+        fb_draw_cloud(x, y);
+    } else if (code == 45 || code == 48) { /* Fog */
+        fb_draw_cloud(x, y - 1);
+        fb_draw_line(x + 1, y + 8, x + 10, y + 8, 1);
+        fb_draw_line(x + 3, y + 10, x + 10, y + 10, 1);
+    } else if (code >= 95) { /* Storm */
+        fb_draw_cloud(x, y - 1);
+        fb_draw_line(x + 6, y + 7, x + 4, y + 9, 1);
+        fb_draw_line(x + 4, y + 9, x + 7, y + 9, 1);
+        fb_draw_line(x + 7, y + 9, x + 5, y + 11, 1);
+    } else if (code >= 71 && code <= 75) { /* Snow */
+        fb_draw_cloud(x, y - 1);
+        fb_set_pixel(x + 3, y + 9, 1);
+        fb_set_pixel(x + 6, y + 10, 1);
+        fb_set_pixel(x + 9, y + 9, 1);
+    } else if ((code >= 51 && code <= 65) || (code >= 80 && code <= 82)) { /* Rain/drizzle */
+        fb_draw_cloud(x, y - 1);
+        fb_draw_line(x + 3, y + 8, x + 2, y + 10, 1);
+        fb_draw_line(x + 6, y + 8, x + 5, y + 10, 1);
+        fb_draw_line(x + 9, y + 8, x + 8, y + 10, 1);
+    } else {
+        fb_draw_cloud(x, y);
+    }
+}
+
+/* 7-segment big digits: 14x24 cell, 3px segments. bit0=a,1=b,2=c,3=d,4=e,5=f,6=g */
+#define BIG_W 14
+#define BIG_H 24
+#define BIG_T 3
+#define BIG_ADV 17
+#define BIG_COLON_ADV 8
+
+static const uint8_t segmap[10] = {
+    0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
+};
+
+void fb_draw_big_digit(int x, int y, int digit, int color) {
+    if (digit < 0 || digit > 9) return;
+    uint8_t s = segmap[digit];
+    if (s & 0x01) fb_fill_rect(x + 2, y, BIG_W - 4, BIG_T, color);                 /* a */
+    if (s & 0x40) fb_fill_rect(x + 2, y + 10, BIG_W - 4, BIG_T, color);            /* g */
+    if (s & 0x08) fb_fill_rect(x + 2, y + BIG_H - BIG_T, BIG_W - 4, BIG_T, color); /* d */
+    if (s & 0x20) fb_fill_rect(x, y + 2, BIG_T, 9, color);                         /* f */
+    if (s & 0x02) fb_fill_rect(x + BIG_W - BIG_T, y + 2, BIG_T, 9, color);         /* b */
+    if (s & 0x10) fb_fill_rect(x, y + 13, BIG_T, 9, color);                        /* e */
+    if (s & 0x04) fb_fill_rect(x + BIG_W - BIG_T, y + 13, BIG_T, 9, color);        /* c */
+}
+
+int fb_big_text_width(const char *s) {
+    int w = 0;
+    while (s && *s) {
+        if (*s >= '0' && *s <= '9') w += BIG_ADV;
+        else if (*s == ':' || *s == '.' || *s == ' ') w += BIG_COLON_ADV;
+        s++;
+    }
+    return w;
+}
+
+void fb_draw_big_text(int x, int y, const char *s, int color) {
+    while (s && *s) {
+        if (*s >= '0' && *s <= '9') {
+            fb_draw_big_digit(x, y, *s - '0', color);
+            x += BIG_ADV;
+        } else if (*s == ':') {
+            fb_fill_rect(x + 1, y + 6, 3, 3, color);
+            fb_fill_rect(x + 1, y + 15, 3, 3, color);
+            x += BIG_COLON_ADV;
+        } else if (*s == '.') {
+            fb_fill_rect(x + 1, y + BIG_H - 3, 3, 3, color);
+            x += BIG_COLON_ADV;
+        } else if (*s == ' ') {
+            x += BIG_COLON_ADV;
+        }
+        s++;
+    }
+}
+
 /* Internal helper for drawing characters with specific colors and scale */
 static const uint8_t font5x7[][5] = {
     {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00}, {0x00,0x07,0x00,0x07,0x00}, {0x14,0x7F,0x14,0x7F,0x14},

@@ -46,6 +46,7 @@ data class WatchState(
     val address: String? = null,
     val lastAddress: String? = null,
     val autoConnect: Boolean = true,
+    val autoWeather: Boolean = false,
     val battery: Int? = null,
     val steps: Long? = null,
     val distanceM: Long? = null,
@@ -105,16 +106,28 @@ class WatchBleManager(private val context: Context) {
         _state.value = _state.value.copy(
             lastAddress = prefs.getString(BleHolder.KEY_ADDRESS, null),
             autoConnect = prefs.getBoolean(BleHolder.KEY_AUTO_CONNECT, true),
+            autoWeather = prefs.getBoolean(BleHolder.KEY_AUTO_WEATHER, false),
         )
     }
 
     /** Persisted toggle for auto-connect + background reconnect. */
+    @SuppressLint("MissingPermission")
     fun setAutoConnect(enabled: Boolean) {
         prefs.edit().putBoolean(BleHolder.KEY_AUTO_CONNECT, enabled).apply()
         _state.value = _state.value.copy(autoConnect = enabled)
         if (!enabled) {
             reconnectJob?.cancel()
             reconnectJob = null
+            // A passive (autoConnect=true) GATT client can be waiting indefinitely
+            // for the watch to reappear; close it so it stops registering with
+            // the Bluetooth stack. Never touch a live connection here.
+            if (!_state.value.connected) {
+                try {
+                    gatt?.close()
+                } catch (_: Exception) {
+                }
+                gatt = null
+            }
             _state.value = _state.value.copy(reconnecting = false)
         }
         appendLog("Auto-connect ${if (enabled) "on" else "off"}")
@@ -135,6 +148,24 @@ class WatchBleManager(private val context: Context) {
     fun setForwarding(enabled: Boolean) {
         prefs.edit().putBoolean(BleHolder.KEY_FORWARD, enabled).apply()
         appendLog("Notification forwarding ${if (enabled) "on" else "off"}")
+    }
+
+    /** Persisted toggle: fetch device-location weather and push it on every connect. */
+    fun setAutoWeather(enabled: Boolean) {
+        prefs.edit().putBoolean(BleHolder.KEY_AUTO_WEATHER, enabled).apply()
+        _state.value = _state.value.copy(autoWeather = enabled)
+        appendLog("Auto-weather ${if (enabled) "on" else "off"}")
+    }
+
+    /** Fetch device-location weather and push it now, regardless of the auto-weather toggle. */
+    suspend fun refreshWeatherNow(): Boolean {
+        val result = WeatherFetcher.fetchForDeviceLocation(context) ?: run {
+            appendLog("Weather refresh failed (no location/network)")
+            return false
+        }
+        sendWeather(result.tempC, result.wmoCode)
+        appendLog("Weather refreshed: ${result.tempC}°C code ${result.wmoCode}")
+        return true
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -278,6 +309,15 @@ class WatchBleManager(private val context: Context) {
                             appendLog("Auto time-sync sent")
                         } catch (e: Exception) {
                             appendLog("Auto time-sync failed: ${e.message}")
+                        }
+                    }
+                    if (_state.value.autoWeather) {
+                        this@WatchBleManager.scope.launch {
+                            try {
+                                refreshWeatherNow()
+                            } catch (e: Exception) {
+                                appendLog("Auto-weather failed: ${e.message}")
+                            }
                         }
                     }
                     // Notification payloads can be 161 B; default MTU (23) truncates
@@ -717,21 +757,50 @@ class WatchBleManager(private val context: Context) {
         reconnectJob = scope.launch {
             _state.value = _state.value.copy(reconnecting = true, error = null)
             for ((i, delayS) in RECONNECT_DELAYS.withIndex()) {
-                if (_state.value.connected || userDisconnected) break
+                if (_state.value.connected || userDisconnected) return@launch
                 appendLog("Reconnect in ${delayS}s (attempt ${i + 1}/${RECONNECT_DELAYS.size})…")
                 delay(delayS * 1000)
-                if (_state.value.connected || userDisconnected) break
+                if (_state.value.connected || userDisconnected) return@launch
                 appendLog("Reconnect attempt ${i + 1}…")
                 try {
                     connectInternal(addr)
-                    break
+                    return@launch
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     appendLog("Reconnect failed: ${e.message}")
                 }
             }
-            _state.value = _state.value.copy(reconnecting = false)
+            // Active attempts only succeed while the watch happens to be
+            // advertising (it stops after ~5 min idle). Hand off to the
+            // Bluetooth stack's passive auto-connect instead of polling with
+            // active connects forever: near-zero radio/battery cost, and it
+            // fires the moment the watch starts advertising again (e.g. a
+            // wrist raise) rather than waiting for the next 60s tick.
+            if (!_state.value.connected && !userDisconnected) {
+                startPassiveReconnect(addr)
+            } else {
+                _state.value = _state.value.copy(reconnecting = false)
+            }
         }
+    }
+
+    /** Registers a standing autoConnect=true GATT client; fires whenever the watch reappears. */
+    @SuppressLint("MissingPermission")
+    private fun startPassiveReconnect(address: String) {
+        if (!hasBlePermission() || adapter?.isEnabled != true) {
+            _state.value = _state.value.copy(reconnecting = false)
+            return
+        }
+        appendLog("Active retries exhausted; waiting for watch to reappear…")
+        stopScan()
+        try {
+            gatt?.close()
+        } catch (_: Exception) {
+        }
+        val device = adapter!!.getRemoteDevice(address)
+        gatt = device.connectGatt(context, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        // _state.reconnecting stays true; onConnectionStateChange(CONNECTED) or a
+        // manual disconnect/forgetDevice/setAutoConnect(false) is what ends this wait.
     }
 
     @SuppressLint("MissingPermission")

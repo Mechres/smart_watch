@@ -2,19 +2,32 @@ package com.hikaboshi.companion.ui
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.hikaboshi.companion.ble.BleHolder
 import com.hikaboshi.companion.ble.Protocol
 import com.hikaboshi.companion.ble.WatchBleManager
 import com.hikaboshi.companion.ble.WatchLinkService
 import com.hikaboshi.companion.ble.WatchState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** One row in the per-app notification-forwarding picker. */
+data class NotifAppRow(
+    val packageName: String,
+    val label: String,
+    val enabled: Boolean,
+)
 
 /** UI-only fields layered on top of WatchState. */
 data class UiState(
@@ -29,6 +42,8 @@ data class UiState(
     val toast: String? = null,
     val forwardEnabled: Boolean = false,
     val listenerGranted: Boolean = false,
+    val notifApps: List<NotifAppRow> = emptyList(),
+    val showAppPicker: Boolean = false,
 )
 
 class WatchViewModelFactory(
@@ -163,6 +178,63 @@ class WatchViewModel(
     private fun isListenerGranted(): Boolean {
         val pkgs = NotificationManagerCompat.getEnabledListenerPackages(appContext)
         return pkgs.contains(appContext.packageName)
+    }
+
+    fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            appContext, android.Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+
+    fun setAutoWeather(enabled: Boolean) {
+        ble.setAutoWeather(enabled)
+    }
+
+    fun refreshWeatherNow() {
+        safeLaunch("Weather refreshed") {
+            if (!ble.refreshWeatherNow()) throw IllegalStateException("no location/network")
+        }
+    }
+
+    fun openAppPicker() {
+        _ui.value = _ui.value.copy(showAppPicker = true)
+        if (_ui.value.notifApps.isEmpty()) loadNotifApps()
+    }
+
+    fun closeAppPicker() {
+        _ui.value = _ui.value.copy(showAppPicker = false)
+    }
+
+    fun setNotifAppEnabled(packageName: String, enabled: Boolean) {
+        BleHolder.setNotifAppEnabled(appContext, packageName, enabled)
+        _ui.value = _ui.value.copy(
+            notifApps = _ui.value.notifApps.map {
+                if (it.packageName == packageName) it.copy(enabled = enabled) else it
+            },
+        )
+    }
+
+    private fun loadNotifApps() {
+        viewModelScope.launch {
+            val rows = withContext(Dispatchers.Default) {
+                val pm = appContext.packageManager
+                val disabled = BleHolder.disabledNotifApps(appContext)
+                pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                    .filter {
+                        it.packageName != appContext.packageName &&
+                            (pm.getLaunchIntentForPackage(it.packageName) != null ||
+                                it.flags and ApplicationInfo.FLAG_SYSTEM == 0)
+                    }
+                    .map { app ->
+                        NotifAppRow(
+                            packageName = app.packageName,
+                            label = pm.getApplicationLabel(app).toString(),
+                            enabled = app.packageName !in disabled,
+                        )
+                    }
+                    .sortedBy { it.label.lowercase() }
+            }
+            _ui.value = _ui.value.copy(notifApps = rows)
+        }
     }
 
     fun refresh() = ble.refreshReads()

@@ -16,6 +16,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hikaboshi.companion.ble.BleHolder
+import com.hikaboshi.companion.ble.WeatherWorker
 import com.hikaboshi.companion.ui.WatchApp
 import com.hikaboshi.companion.ui.WatchViewModel
 import com.hikaboshi.companion.ui.WatchViewModelFactory
@@ -25,6 +26,12 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
+    private lateinit var onLocationPermissionResult: (Boolean) -> Unit
+    private val locationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (::onLocationPermissionResult.isInitialized) onLocationPermissionResult(granted)
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -32,6 +39,7 @@ class MainActivity : ComponentActivity() {
         // receiver read/write the same manager instance, not one tied to this Activity.
         val ble = BleHolder.get(applicationContext)
         ensurePermissions()
+        WeatherWorker.ensureScheduled(applicationContext)
 
         setContent {
             val factory = WatchViewModelFactory(ble, applicationContext)
@@ -50,7 +58,14 @@ class MainActivity : ComponentActivity() {
                 onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
             }
 
-            WatchApp(vm = vm, state = state)
+            WatchApp(
+                vm = vm,
+                state = state,
+                onRequestLocationPermission = { onResult ->
+                    onLocationPermissionResult = onResult
+                    locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+                },
+            )
         }
     }
 

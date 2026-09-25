@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,6 +40,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -50,8 +54,16 @@ import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WatchApp(vm: WatchViewModel, state: UiState) {
+fun WatchApp(
+    vm: WatchViewModel,
+    state: UiState,
+    onRequestLocationPermission: ((Boolean) -> Unit) -> Unit,
+) {
     val snackbar = remember { SnackbarHostState() }
+
+    if (state.showAppPicker) {
+        AppPickerDialog(state, vm)
+    }
 
     LaunchedEffect(state.toast) {
         state.toast?.let {
@@ -104,7 +116,7 @@ fun WatchApp(vm: WatchViewModel, state: UiState) {
             if (!state.ble.connected) {
                 ScanSection(state, vm)
             } else {
-                DashboardSection(state, vm)
+                DashboardSection(state, vm, onRequestLocationPermission)
             }
         }
     }
@@ -182,9 +194,45 @@ private fun NotificationSettingsCard(state: UiState, vm: WatchViewModel) {
                         onCheckedChange = { vm.setForwarding(it) },
                     )
                 }
+                OutlinedButton(onClick = { vm.openAppPicker() }) {
+                    Icon(Icons.Default.Smartphone, null)
+                    Text("  Choose apps…")
+                }
             }
         }
     }
+}
+
+@Composable
+private fun AppPickerDialog(state: UiState, vm: WatchViewModel) {
+    AlertDialog(
+        onDismissRequest = { vm.closeAppPicker() },
+        title = { Text("Forward notifications from") },
+        text = {
+            if (state.notifApps.isEmpty()) {
+                Text("Loading apps…", style = MaterialTheme.typography.bodySmall)
+            } else {
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    items(state.notifApps, key = { it.packageName }) { app ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(app.label, Modifier.weight(1f))
+                            Switch(
+                                checked = app.enabled,
+                                onCheckedChange = { vm.setNotifAppEnabled(app.packageName, it) },
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { vm.closeAppPicker() }) { Text("Done") }
+        },
+    )
 }
 
 @Composable
@@ -274,7 +322,11 @@ private fun EventLogCard(state: UiState, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun DashboardSection(state: UiState, vm: WatchViewModel) {
+private fun DashboardSection(
+    state: UiState,
+    vm: WatchViewModel,
+    onRequestLocationPermission: ((Boolean) -> Unit) -> Unit,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -373,6 +425,37 @@ private fun DashboardSection(state: UiState, vm: WatchViewModel) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Weather", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto (device location)")
+                        Text(
+                            "Fetches and pushes on connect + hourly",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = state.ble.autoWeather,
+                        onCheckedChange = { checked ->
+                            if (checked && !vm.hasLocationPermission()) {
+                                onRequestLocationPermission { granted ->
+                                    if (granted) vm.setAutoWeather(true)
+                                }
+                            } else {
+                                vm.setAutoWeather(checked)
+                            }
+                        },
+                    )
+                }
+                if (state.ble.autoWeather) {
+                    OutlinedButton(onClick = { vm.refreshWeatherNow() }, enabled = !state.busy) {
+                        Icon(Icons.Default.Refresh, null); Text(" Refresh now")
+                    }
+                }
+                Text("Manual override", style = MaterialTheme.typography.labelMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = state.weatherTemp,

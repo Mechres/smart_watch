@@ -26,6 +26,7 @@ class WatchNotificationListener : NotificationListenerService() {
         if (!mgr.state.value.connected) return
         if (sbn.isOngoing) return
         if (sbn.packageName in DENYLIST) return
+        if (sbn.packageName in BleHolder.disabledNotifApps(this)) return
 
         val extras = sbn.notification.extras
         var title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()

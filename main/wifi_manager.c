@@ -251,3 +251,101 @@ void wifi_sync_time_async(void) {
 int wifi_get_sync_status(void) {
     return s_sync_status;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Passive AP scanner                                                          */
+/* -------------------------------------------------------------------------- */
+static volatile int s_scan_status = 0; // 0=Idle, 1=Scanning, 2=Done, 3=Failed
+static wifi_scan_ap_t s_scan_results[WIFI_SCAN_MAX_AP];
+static int s_scan_count = 0;
+
+static void wifi_scan_task(void *arg) {
+    s_scan_status = 1;
+
+    esp_err_t err = wifi_init_sta();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "scan: wifi_init_sta failed: %s", esp_err_to_name(err));
+        s_scan_status = 3;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // Only start the radio here if nothing else already has it running;
+    // don't disturb an existing connection (or its auto-reconnect) either way.
+    bool started_here = !s_wifi_enabled;
+    if (started_here) {
+        err = esp_wifi_start();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+            ESP_LOGE(TAG, "scan: esp_wifi_start failed: %s", esp_err_to_name(err));
+            s_scan_status = 3;
+            vTaskDelete(NULL);
+            return;
+        }
+    }
+
+    wifi_scan_config_t scan_cfg = { 0 };
+    err = esp_wifi_scan_start(&scan_cfg, true); // blocking (this task only)
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "scan_start failed: %s", esp_err_to_name(err));
+        s_scan_status = 3;
+        if (started_here) esp_wifi_stop();
+        vTaskDelete(NULL);
+        return;
+    }
+
+    wifi_ap_record_t records[WIFI_SCAN_MAX_AP];
+    uint16_t num = WIFI_SCAN_MAX_AP;
+    esp_wifi_scan_get_ap_records(&num, records);
+
+    int n = num;
+    for (int i = 0; i < n; i++) {
+        strncpy(s_scan_results[i].ssid, (const char *)records[i].ssid, sizeof(s_scan_results[i].ssid) - 1);
+        s_scan_results[i].ssid[sizeof(s_scan_results[i].ssid) - 1] = '\0';
+        s_scan_results[i].rssi = records[i].rssi;
+        s_scan_results[i].channel = records[i].primary;
+        s_scan_results[i].open = (records[i].authmode == WIFI_AUTH_OPEN);
+    }
+    // Already sorted strongest-first by the driver, but don't rely on that.
+    for (int i = 0; i < n - 1; i++) {
+        for (int j = 0; j < n - 1 - i; j++) {
+            if (s_scan_results[j].rssi < s_scan_results[j + 1].rssi) {
+                wifi_scan_ap_t tmp = s_scan_results[j];
+                s_scan_results[j] = s_scan_results[j + 1];
+                s_scan_results[j + 1] = tmp;
+            }
+        }
+    }
+    s_scan_count = n;
+    s_scan_status = 2;
+
+    if (started_here) {
+        esp_wifi_stop();
+    }
+    vTaskDelete(NULL);
+}
+
+esp_err_t wifi_scan_start_async(void) {
+    if (s_scan_status == 1) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_scan_status = 0;
+    if (xTaskCreate(wifi_scan_task, "wifi_scan_task", 4096, NULL, 5, NULL) != pdPASS) {
+        s_scan_status = 3;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+int wifi_scan_get_status(void) {
+    return s_scan_status;
+}
+
+int wifi_scan_get_results(wifi_scan_ap_t *out, int max_count) {
+    int n = s_scan_count;
+    if (out == NULL || max_count <= 0) {
+        return n;
+    }
+    if (n > max_count) n = max_count;
+    memcpy(out, s_scan_results, n * sizeof(wifi_scan_ap_t));
+    return n;
+}

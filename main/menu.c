@@ -37,6 +37,7 @@ typedef enum {
     MENU_SYNC_WAIT,       // Waiting for WiFi Sync
     MENU_FIND_PHONE,      // Find My Phone
     MENU_MUSIC_CONTROL,   // Music Control
+    MENU_WIFI_SCAN,       // Nearby WiFi networks
     MENU_COUNT
 } menu_mode_t;
 
@@ -93,6 +94,7 @@ static int watchface_selection = 0;
 // weather_selection removed
 static int music_selection = 0; // 0=Play/Pause, 1=Next, 2=Prev, 3=Back
 static int find_phone_selection = 0; // 0=Ring, 1=Stop, 2=Back
+static int wifi_scan_scroll = 0;
 static bool editing_mode = false;
 
 static uint8_t saved_brightness = 128;
@@ -183,6 +185,9 @@ bool menu_is_watch_mode(void) {
 int menu_get_min_refresh_ms(void) {
     if (current_menu == MENU_STOPWATCH && stopwatch_running) {
         return 100; /* 1/10 s display resolution */
+    }
+    if (current_menu == MENU_WIFI_SCAN && wifi_scan_get_status() == 1) {
+        return 500; /* poll for the background scan finishing */
     }
     if (current_menu == MENU_WATCH) {
         /* Throttle animations in light sleep to save power + I2C contention. */
@@ -637,12 +642,54 @@ static void render_music_control_menu(void) {
     }
 }
 
+static void render_wifi_scan_menu(void) {
+    fb_clear();
+    fb_draw_header("WIFI SCAN");
+
+    int status = wifi_scan_get_status();
+    if (status == 1) {
+        fb_draw_text(4, 30, "Scanning...");
+        return;
+    }
+
+    wifi_scan_ap_t results[WIFI_SCAN_MAX_AP];
+    int n = wifi_scan_get_results(results, WIFI_SCAN_MAX_AP);
+
+    if (status == 3) {
+        fb_draw_text(4, 24, "Scan failed");
+        fb_draw_text(4, 36, "OK: retry");
+        return;
+    }
+    if (n == 0) {
+        fb_draw_text(4, 24, "No networks found");
+        fb_draw_text(4, 36, "OK: rescan");
+        return;
+    }
+
+    int start = wifi_scan_scroll;
+    if (start > n - 5) start = n > 5 ? n - 5 : 0;
+    if (start < 0) start = 0;
+
+    int y_pos = 12;
+    for (int i = start; i < n && i < start + 5; i++) {
+        const char *ssid = results[i].ssid[0] ? results[i].ssid : "(hidden)";
+        char line[22];
+        /* "<ssid>          <lock><rssi>", e.g. "MyWiFi        * -54" */
+        snprintf(line, sizeof(line), "%-13.13s%c%4d", ssid, results[i].open ? ' ' : '*', results[i].rssi);
+        fb_draw_text(1, y_pos + 1, line);
+        y_pos += 10;
+    }
+
+    if (start > 0) fb_draw_text(120, 12, "^");
+    if (start + 5 < n) fb_draw_text(120, 54, "v");
+}
+
 static void render_root_menu(void) {
     fb_clear();
     fb_draw_header("MENU");
 
     /* 8x8 MSB-first glyphs, one per root item. */
-    static const uint8_t ICONS[11][8] = {
+    static const uint8_t ICONS[12][8] = {
         {0x10,0x10,0x10,0x10,0x38,0x38,0x7C,0x38}, /* Sensors: thermometer */
         {0x00,0x18,0x3C,0x42,0x42,0x3E,0x00,0x00}, /* Weather: cloud */
         {0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0x00}, /* Settings: sliders */
@@ -653,6 +700,7 @@ static void render_root_menu(void) {
         {0x10,0x00,0x38,0x10,0x10,0x10,0x38,0x00}, /* System Info: i */
         {0x3C,0x42,0x42,0x42,0x24,0x18,0x18,0x00}, /* Flashlight: bulb */
         {0x18,0x3C,0x7C,0x7C,0x7C,0x7C,0x3C,0x18}, /* Phone Silent: moon */
+        {0x03,0x03,0x07,0x07,0x17,0x17,0x57,0x57}, /* WiFi Scan: signal bars */
         {0x10,0x30,0x7E,0x30,0x10,0x00,0x00,0x00}, /* Back: arrow */
     };
     const char *items[] = {
@@ -666,9 +714,10 @@ static void render_root_menu(void) {
         "System Info",
         "Flashlight",
         "Phone Silent",
+        "WiFi Scan",
         "[Back]"
     };
-    int item_count = 11;
+    int item_count = 12;
 
     int start_idx = root_selection - 2;
     if (start_idx < 0) start_idx = 0;
@@ -789,6 +838,9 @@ void menu_render(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int 
         case MENU_NOTIFICATION:
             render_notification_menu();
             break;
+        case MENU_WIFI_SCAN:
+            render_wifi_scan_menu();
+            break;
         case MENU_SYNC_WAIT:
             render_sync_wait();
             break;
@@ -851,7 +903,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
 
     if (event == BTN_UP_PRESS) {
         if (current_menu == MENU_ROOT) {
-            root_selection = (root_selection > 0) ? root_selection - 1 : 10;
+            root_selection = (root_selection > 0) ? root_selection - 1 : 11;
         } else if (current_menu == MENU_WATCHFACE) {
             watchface_selection = (watchface_selection > 0) ? watchface_selection - 1 : WATCHFACE_COUNT;
         } else if (current_menu == MENU_FIND_PHONE) {
@@ -860,6 +912,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             music_selection = (music_selection > 0) ? music_selection - 1 : 3;
         } else if (current_menu == MENU_NOTIFICATION) {
             if (notif_scroll > 0) notif_scroll--;
+        } else if (current_menu == MENU_WIFI_SCAN) {
+            if (wifi_scan_scroll > 0) wifi_scan_scroll--;
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable += 10;
@@ -888,7 +942,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            root_selection = (root_selection < 10) ? root_selection + 1 : 0;
+            root_selection = (root_selection < 11) ? root_selection + 1 : 0;
         } else if (current_menu == MENU_WATCHFACE) {
             watchface_selection = (watchface_selection < WATCHFACE_COUNT) ? watchface_selection + 1 : 0;
         } else if (current_menu == MENU_FIND_PHONE) {
@@ -898,6 +952,10 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         } else if (current_menu == MENU_NOTIFICATION) {
             int mx = notif_max_scroll();
             if (notif_scroll < mx) notif_scroll++;
+        } else if (current_menu == MENU_WIFI_SCAN) {
+            int n = wifi_scan_get_results(NULL, 0);
+            int max_scroll = n > 5 ? n - 5 : 0;
+            if (wifi_scan_scroll < max_scroll) wifi_scan_scroll++;
         } else if (current_menu == MENU_STOPWATCH) {
             if (!stopwatch_running) {
                 stopwatch_elapsed_time = 0; // Reset
@@ -960,6 +1018,10 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else if (root_selection == 9) {
                 ble_manager_send_command("dnd_toggle");
             } else if (root_selection == 10) {
+                current_menu = MENU_WIFI_SCAN;
+                wifi_scan_scroll = 0;
+                wifi_scan_start_async();
+            } else if (root_selection == 11) {
                 current_menu = MENU_WATCH; // Back to watch
             }
         } else if (current_menu == MENU_FIND_PHONE) {
@@ -1064,6 +1126,12 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
              // OK dismisses (UP/DN scroll); tell the phone so it clears too.
              ble_manager_send_command("dismiss_notif");
              current_menu = MENU_WATCH;
+        } else if (current_menu == MENU_WIFI_SCAN) {
+             // OK rescans (long-press OK backs out via the default case below)
+             if (wifi_scan_get_status() != 1) {
+                 wifi_scan_scroll = 0;
+                 wifi_scan_start_async();
+             }
         } else if (current_menu == MENU_SYNC_WAIT) {
              // Allow exit from sync wait
              current_menu = MENU_SETTINGS;

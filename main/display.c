@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "display.h"
 #include "sensors.h"
@@ -78,14 +79,134 @@ void fb_fill_rect(int x, int y, int w, int h, int color) {
         int bit_lo = (page == page_start) ? (y0 & 7) : 0;
         int bit_hi = (page == page_end) ? ((y1 - 1) & 7) : 7;
         uint8_t mask = (uint8_t)(((1u << (bit_hi - bit_lo + 1)) - 1) << bit_lo);
-        uint8_t val = color ? mask : 0;
         int idx = page * DISP_WIDTH;
         for (int i = x0; i < x1; i++) {
             if (color) fb[idx + i] |= mask;
             else fb[idx + i] &= ~mask;
         }
-        (void)val;
     }
+}
+
+void fb_draw_line_thick(int x0, int y0, int x1, int y1, int thickness, int color) {
+    if (thickness <= 1) {
+        fb_draw_line(x0, y0, x1, y1, color);
+        return;
+    }
+    /* Draw multiple parallel 1px lines offset perpendicular to direction */
+    int dx = abs(x1 - x0), dy = abs(y1 - y0);
+    int half = thickness / 2;
+    if (dx >= dy) {
+        for (int o = -half; o <= half; o++) fb_draw_line(x0, y0 + o, x1, y1 + o, color);
+    } else {
+        for (int o = -half; o <= half; o++) fb_draw_line(x0 + o, y0, x1 + o, y1, color);
+    }
+}
+
+void fb_draw_circle(int cx, int cy, int r, int color) {
+    if (r <= 0) return;
+    int x = r, y = 0, err = 0;
+    while (x >= y) {
+        fb_set_pixel(cx + x, cy + y, color);
+        fb_set_pixel(cx + y, cy + x, color);
+        fb_set_pixel(cx - y, cy + x, color);
+        fb_set_pixel(cx - x, cy + y, color);
+        fb_set_pixel(cx - x, cy - y, color);
+        fb_set_pixel(cx - y, cy - x, color);
+        fb_set_pixel(cx + y, cy - x, color);
+        fb_set_pixel(cx + x, cy - y, color);
+        y++;
+        if (err <= 0) {
+            err += 2 * y + 1;
+        } else {
+            x--;
+            err -= 2 * x + 1;
+        }
+    }
+}
+
+void fb_fill_circle(int cx, int cy, int r, int color) {
+    if (r <= 0) return;
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = (int)sqrtf((float)(r * r - dy * dy));
+        for (int x = -dx; x <= dx; x++) fb_set_pixel(cx + x, cy + dy, color);
+    }
+}
+
+/* bitmap: row-major, MSB-first, stride = (w+7)/8 bytes per row */
+void fb_draw_bitmap(int x, int y, int w, int h, const uint8_t *bitmap, int color) {
+    if (!bitmap || w <= 0 || h <= 0) return;
+    int stride = (w + 7) / 8;
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            uint8_t b = bitmap[row * stride + (col >> 3)];
+            if (b & (0x80 >> (col & 7))) fb_set_pixel(x + col, y + row, color);
+            else if (color >= 0) { /* transparent when color==-1 handled by caller */ }
+        }
+    }
+}
+
+void fb_draw_progress_bar(int x, int y, int w, int h, int pct) {
+    if (w <= 2 || h <= 2) return;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    fb_draw_rect(x, y, w, h, 1);
+    int inner_w = w - 2;
+    int fill_w = (inner_w * pct) / 100;
+    if (fill_w > 0) fb_fill_rect(x + 1, y + 1, fill_w, h - 2, 1);
+}
+
+void fb_draw_battery_icon(int x, int y, int pct, int color, int bg) {
+    /* 12x7 body + 2px nub. Fill proportional to pct. */
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    const int bw = 12, bh = 7;
+    fb_draw_rect(x, y, bw, bh, color);
+    /* nub */
+    fb_fill_rect(x + bw, y + 2, 2, bh - 4, color);
+    int inner_w = bw - 2;
+    int fill_w = (inner_w * pct) / 100;
+    /* clear interior first when bg >= 0 */
+    if (bg >= 0) fb_fill_rect(x + 1, y + 1, inner_w, bh - 2, bg);
+    if (fill_w > 0) fb_fill_rect(x + 1, y + 1, fill_w, bh - 2, color);
+    /* low battery: blink handled by caller; draw slash when empty */
+    if (pct <= 15) fb_draw_line(x + 1, y + bh - 2, x + bw - 2, y + 1, color);
+}
+
+int fb_text_width(const char *s, int scale) {
+    if (!s) return 0;
+    int n = 0;
+    while (*s++) n++;
+    return n * 6 * scale - (n ? (1 * scale) : 0) + (n ? scale : 0);
+    /* approx: keep compatible with draw loop (6*scale advance) */
+}
+
+void fb_draw_text_centered(int y, const char *s) {
+    if (!s) return;
+    int w = (int)strlen(s) * 6;
+    int x = (DISP_WIDTH - w) / 2;
+    if (x < 0) x = 0;
+    fb_draw_text(x, y, s);
+}
+
+void fb_draw_text_centered_ex(int y, const char *s, int color, int bg_color) {
+    if (!s) return;
+    int w = (int)strlen(s) * 6;
+    int x = (DISP_WIDTH - w) / 2;
+    if (x < 0) x = 0;
+    fb_draw_text_ex(x, y, s, color, bg_color);
+}
+
+void fb_draw_text_centered_scaled(int y, const char *s, int scale) {
+    if (!s || scale < 1) return;
+    int w = (int)strlen(s) * 6 * scale;
+    int x = (DISP_WIDTH - w) / 2;
+    if (x < 0) x = 0;
+    fb_draw_text_scaled(x, y, s, scale);
+}
+
+void fb_draw_header(const char *title) {
+    fb_fill_rect(0, 0, DISP_WIDTH, 9, 1);
+    if (title) fb_draw_text_ex(2, 1, title, 0, -1);
 }
 
 /* Internal helper for drawing characters with specific colors and scale */

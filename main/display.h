@@ -1,6 +1,7 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
+#include <stdint.h>
 #include "esp_err.h"
 
 /* Display dimensions */
@@ -17,8 +18,19 @@ void fb_draw_text_ex(int x, int y, const char *s, int color, int bg_color);
 void fb_draw_text_scaled(int x, int y, const char *s, int scale);
 
 void fb_draw_line(int x0, int y0, int x1, int y1, int color);
+void fb_draw_line_thick(int x0, int y0, int x1, int y1, int thickness, int color);
 void fb_draw_rect(int x, int y, int w, int h, int color);
 void fb_fill_rect(int x, int y, int w, int h, int color);
+void fb_draw_circle(int cx, int cy, int r, int color);
+void fb_fill_circle(int cx, int cy, int r, int color);
+void fb_draw_bitmap(int x, int y, int w, int h, const uint8_t *bitmap, int color);
+void fb_draw_progress_bar(int x, int y, int w, int h, int pct);
+void fb_draw_battery_icon(int x, int y, int pct, int color, int bg);
+int fb_text_width(const char *s, int scale);
+void fb_draw_text_centered(int y, const char *s);
+void fb_draw_text_centered_ex(int y, const char *s, int color, int bg_color);
+void fb_draw_text_centered_scaled(int y, const char *s, int scale);
+void fb_draw_header(const char *title);
 
 esp_err_t sh1106_render(void);
 

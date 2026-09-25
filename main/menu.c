@@ -137,6 +137,12 @@ int menu_get_min_refresh_ms(void) {
         switch (current_watchface) {
             case WATCHFACE_TERMINAL:
                 return low_power ? 2000 : 1000; /* seconds field + cursor blink */
+            case WATCHFACE_DIGITAL:
+                return low_power ? 1000 : 500; /* seconds + blinking colon */
+            case WATCHFACE_ANALOG_STYLE:
+                return low_power ? 1000 : 500; /* second hand */
+            case WATCHFACE_MINIMAL:
+                return low_power ? 2000 : 1000; /* blinking colon */
             case WATCHFACE_MATRIX:
             case WATCHFACE_CATS:
                 return low_power ? 1000 : 200;  /* animation tick */

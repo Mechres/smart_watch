@@ -186,8 +186,12 @@ int menu_get_min_refresh_ms(void) {
     if (current_menu == MENU_STOPWATCH && stopwatch_running) {
         return 100; /* 1/10 s display resolution */
     }
-    if (current_menu == MENU_WIFI_SCAN && wifi_scan_get_status() == 1) {
-        return 500; /* poll for the background scan finishing */
+    if (current_menu == MENU_WIFI_SCAN) {
+        /* Not just while scanning: without this, the screen stops refreshing
+         * the instant the background scan finishes and never draws the
+         * results, since a redraw is otherwise only triggered by a button
+         * press or this timer. */
+        return 500;
     }
     if (current_menu == MENU_WATCH) {
         /* Throttle animations in light sleep to save power + I2C contention. */

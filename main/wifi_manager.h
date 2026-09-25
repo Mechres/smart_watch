@@ -16,10 +16,10 @@
 #endif
 
 /* Initialize WiFi in Station mode and connect */
-void wifi_init_sta(void);
+esp_err_t wifi_init_sta(void);
 
-void wifi_stop(void);
-void wifi_start(void);
+esp_err_t wifi_stop(void);
+esp_err_t wifi_start(void);
 bool wifi_is_connected(void);
 bool wifi_ensure_connection(int timeout_ms);
 

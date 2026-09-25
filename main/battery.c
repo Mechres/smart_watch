@@ -24,9 +24,14 @@ static const char *TAG = "Battery";
 #define BATTERY_MIN_MV 3000
 #define BATTERY_MAX_MV 4200
 
-static adc_oneshot_unit_handle_t adc1_handle;
+static adc_oneshot_unit_handle_t adc1_handle = NULL;
 static adc_cali_handle_t adc1_cali_handle = NULL;
 static float s_smoothed_voltage = 0.0f;
+static bool s_battery_available = false;
+
+bool battery_is_available(void) {
+    return s_battery_available;
+}
 
 // LiPo discharge curve lookup table (Voltage -> Percentage)
 typedef struct {
@@ -47,7 +52,7 @@ static const battery_curve_t lipo_curve[] = {
     {3300, 0}
 };
 
-void battery_init(void) {
+esp_err_t battery_init(void) {
     // Configure GPIO4 as input with no pull resistors BEFORE ADC init
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << BATTERY_GPIO),
@@ -56,18 +61,34 @@ void battery_init(void) {
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&io_conf);
+    esp_err_t err = gpio_config(&io_conf);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "GPIO config failed: %s - battery unavailable", esp_err_to_name(err));
+        s_battery_available = false;
+        return err;
+    }
     
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = BATTERY_ADC_UNIT,
     };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+    err = adc_oneshot_new_unit(&init_config1, &adc1_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ADC unit init failed: %s - battery unavailable", esp_err_to_name(err));
+        adc1_handle = NULL;
+        s_battery_available = false;
+        return err;
+    }
     
     adc_oneshot_chan_cfg_t config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
         .atten = BATTERY_ATTEN,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, BATTERY_ADC_CHANNEL, &config));
+    err = adc_oneshot_config_channel(adc1_handle, BATTERY_ADC_CHANNEL, &config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ADC channel config failed: %s - battery unavailable", esp_err_to_name(err));
+        s_battery_available = false;
+        return err;
+    }
     
     // Initialize ADC calibration
     adc_cali_curve_fitting_config_t cali_config = {
@@ -84,9 +105,14 @@ void battery_init(void) {
     }
     
     ESP_LOGI(TAG, "Battery ADC initialized on GPIO4 (Ratio=2.02)");
+    s_battery_available = true;
+    return ESP_OK;
 }
 
 int battery_get_voltage_mv(void) {
+    if (!s_battery_available || adc1_handle == NULL) {
+        return 0;
+    }
     int adc_raw;
     if (adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &adc_raw) == ESP_OK) {
         int gpio_voltage_mv;

@@ -107,7 +107,10 @@ void menu_init(void) {
     // Load initial settings
     settings_load(&motion_threshold_editable, &screen_timeout_editable, (int*)&current_watchface, &brightness_editable);
     // Apply loaded brightness
-    sh1106_set_contrast((uint8_t)brightness_editable);
+    esp_err_t err = sh1106_set_contrast((uint8_t)brightness_editable);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "set_contrast failed: %s", esp_err_to_name(err));
+    }
 }
 
 int16_t menu_get_motion_threshold(void) {
@@ -396,24 +399,30 @@ static void render_system_info_menu(void) {
 
     // Heap
     uint32_t free_heap = esp_get_free_heap_size();
-    snprintf(buf, sizeof(buf), "Heap: %lu B", free_heap);
+    snprintf(buf, sizeof(buf), "Heap: %u B", (unsigned)free_heap);
     fb_draw_text(0, 22, buf);
 
-    // IP
-    esp_netif_ip_info_t ip_info;
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (netif) {
-        esp_netif_get_ip_info(netif, &ip_info);
-        snprintf(buf, sizeof(buf), "IP: " IPSTR, IP2STR(&ip_info.ip));
+    // IP (only valid when WiFi connected; otherwise show dashes)
+    if (wifi_is_connected()) {
+        esp_netif_ip_info_t ip_info;
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+            snprintf(buf, sizeof(buf), "IP: " IPSTR, IP2STR(&ip_info.ip));
+        } else {
+            snprintf(buf, sizeof(buf), "IP: ---");
+        }
     } else {
-        snprintf(buf, sizeof(buf), "IP: Unknown");
+        snprintf(buf, sizeof(buf), "IP: (offline)");
     }
     fb_draw_text(0, 32, buf);
 
-    // MAC
-    uint8_t mac[6];
-    esp_wifi_get_mac(WIFI_IF_STA, mac);
-    snprintf(buf, sizeof(buf), "MAC:%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    // MAC (may fail if WiFi never initialized)
+    uint8_t mac[6] = {0};
+    if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+        snprintf(buf, sizeof(buf), "MAC:%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
+        snprintf(buf, sizeof(buf), "MAC: ------");
+    }
     fb_draw_text(0, 42, buf);
 
     fb_draw_text(0, 54, "[Back]");
@@ -690,7 +699,10 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else if (current_setting == SETTINGS_BRIGHTNESS) {
                 brightness_editable += 10;
                 if (brightness_editable > 255) brightness_editable = 255;
-                sh1106_set_contrast((uint8_t)brightness_editable);
+                esp_err_t cerr = sh1106_set_contrast((uint8_t)brightness_editable);
+                if (cerr != ESP_OK) {
+                    ESP_LOGW(TAG, "set_contrast failed: %s", esp_err_to_name(cerr));
+                }
             } else if (current_setting == SETTINGS_RESET) {
                 editing_mode = false; // cancel confirm
             }
@@ -722,7 +734,10 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else if (current_setting == SETTINGS_BRIGHTNESS) {
                 brightness_editable -= 10;
                 if (brightness_editable < 0) brightness_editable = 0;
-                sh1106_set_contrast((uint8_t)brightness_editable);
+                esp_err_t cerr = sh1106_set_contrast((uint8_t)brightness_editable);
+                if (cerr != ESP_OK) {
+                    ESP_LOGW(TAG, "set_contrast failed: %s", esp_err_to_name(cerr));
+                }
             } else if (current_setting == SETTINGS_RESET) {
                 editing_mode = false; // cancel confirm
             }
@@ -756,7 +771,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             } else if (root_selection == 8) {
                 current_menu = MENU_FLASHLIGHT;
                 saved_brightness = (uint8_t)brightness_editable;
-                sh1106_set_contrast(255);
+                if (sh1106_set_contrast(255) != ESP_OK) {
+                    ESP_LOGW(TAG, "flashlight contrast failed");
+                }
             } else if (root_selection == 9) {
                 current_menu = MENU_WATCH; // Back to watch
             }
@@ -775,7 +792,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             else current_menu = MENU_ROOT;
 
         } else if (current_menu == MENU_FLASHLIGHT) {
-             sh1106_set_contrast(saved_brightness);
+             if (sh1106_set_contrast(saved_brightness) != ESP_OK) {
+                 ESP_LOGW(TAG, "flashlight restore failed");
+             }
              current_menu = MENU_ROOT;
         } else if (current_menu == MENU_SYSTEM_INFO) {
             current_menu = MENU_ROOT; // Back
@@ -828,7 +847,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 if (settings_reset() == ESP_OK) {
                     settings_load(&motion_threshold_editable, &screen_timeout_editable,
                                   (int*)&current_watchface, &brightness_editable);
-                    sh1106_set_contrast((uint8_t)brightness_editable);
+                    if (sh1106_set_contrast((uint8_t)brightness_editable) != ESP_OK) {
+                        ESP_LOGW(TAG, "contrast restore failed");
+                    }
                     ESP_LOGI(TAG, "Settings restored to defaults");
                 }
                 editing_mode = false;

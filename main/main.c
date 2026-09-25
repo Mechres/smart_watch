@@ -56,7 +56,9 @@ static esp_err_t i2c_master_init(void) {
 
 /* Motion and gesture-based screen control */
 static bool screen_on = true;
+static bool display_available = true;
 static int32_t last_motion_time_s = 0;
+static uint32_t s_ble_dropped_events = 0;
 
 /* ---------- BLE event queue (NimBLE task → main_task) ----------
  * BLE callbacks run on the NimBLE host task. Shared UI state (screen_on,
@@ -69,7 +71,7 @@ typedef enum {
 
 typedef struct {
     ble_evt_type_t type;
-    char a[160]; /* notification title or command string */
+    char a[256]; /* notification title or command string (BLE_CMD_MAX_LEN) */
     char b[160]; /* notification body (unused for commands) */
 } ble_evt_t;
 
@@ -130,14 +132,16 @@ static void update_screen_state(int32_t current_time_s) {
 /* NimBLE host-task callbacks: copy payload and hand off to main_task */
 static void handle_ble_notification(const char *title, const char *body) {
     if (!ble_evt_enqueue(BLE_EVT_NOTIFICATION, title, body)) {
-        ESP_LOGW(TAG, "BLE notification dropped (queue full)");
+        s_ble_dropped_events++;
+        ESP_LOGW(TAG, "BLE notification dropped (queue full, total dropped=%u)", s_ble_dropped_events);
     }
 }
 
 static void handle_ble_command(const char *command) {
     if (!command) return;
     if (!ble_evt_enqueue(BLE_EVT_COMMAND, command, NULL)) {
-        ESP_LOGW(TAG, "BLE command dropped (queue full)");
+        s_ble_dropped_events++;
+        ESP_LOGW(TAG, "BLE command dropped (queue full, total dropped=%u)", s_ble_dropped_events);
     }
 }
 
@@ -179,18 +183,25 @@ static void process_ble_command(const char *command) {
         last_motion_time_s = (int32_t)(esp_timer_get_time() / 1000000) - 60;
     } else if (strncmp(command, "time=", 5) == 0) {
         long long timestamp = atoll(command + 5);
-        if (timestamp > 0) {
+        /* Valid range: 2020-01-01 .. 2100-01-01. Rejects garbage/negative/overflow. */
+        if (timestamp >= 1577836800LL && timestamp <= 4102444800LL) {
             struct timeval tv;
             tv.tv_sec = (time_t)timestamp;
             tv.tv_usec = 0;
-            settimeofday(&tv, NULL);
-            ESP_LOGI(TAG, "Time updated via BLE to: %lld", timestamp);
+            if (settimeofday(&tv, NULL) == 0) {
+                ESP_LOGI(TAG, "Time updated via BLE to: %lld", timestamp);
+            } else {
+                ESP_LOGW(TAG, "settimeofday failed for timestamp %lld", timestamp);
+            }
+        } else {
+            ESP_LOGW(TAG, "Rejected invalid BLE timestamp: %s", command + 5);
         }
     } else if (strncmp(command, "weather=", 8) == 0) {
         // Format: weather=TEMP,CODE (e.g. weather=24.5,1)
         float temp = 0.0f;
         int code = 0;
-        if (sscanf(command + 8, "%f,%d", &temp, &code) == 2) {
+        if (sscanf(command + 8, "%f,%d", &temp, &code) == 2 &&
+            temp >= -100.0f && temp <= 100.0f && code >= 0 && code <= 99) {
             weather_set_data(temp, code);
             // Refresh screen to show new weather immediately
             if (!screen_on) {
@@ -230,7 +241,9 @@ static void main_task(void *arg) {
     menu_init();
 
     sensors_init();
-    battery_init();
+    if (battery_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Battery monitor unavailable - using defaults");
+    }
     pedometer_init();
     pedometer_load();
     pedometer_start_task();
@@ -249,13 +262,18 @@ static void main_task(void *arg) {
     }
     
     // Configure ADXL345 for tap wakeup
-    sensors_config_tap_wakeup();
+    esp_err_t tap_err = sensors_config_tap_wakeup();
+    if (tap_err != ESP_OK) {
+        ESP_LOGW(TAG, "Tap wakeup config failed: %s - deep-sleep wake via tap unavailable",
+                 esp_err_to_name(tap_err));
+    }
 
     if (sh1106_init() != ESP_OK) {
-        ESP_LOGE(TAG, "SH1106 init failed - aborting");
-        vTaskDelete(NULL);
+        ESP_LOGE(TAG, "SH1106 init failed - continuing without display");
+        display_available = false;
+    } else {
+        ESP_LOGI(TAG, "Display ready");
     }
-    ESP_LOGI(TAG, "Display ready");
     
     // Initialize event-driven button input
     if (input_init() != ESP_OK) {
@@ -403,7 +421,9 @@ static void main_task(void *arg) {
         if (screen_on) {
             bool needs_render = false;
 
-            if (!last_screen_on) {
+            if (!display_available) {
+                needs_render = false;
+            } else if (!last_screen_on) {
                 // Screen just turned on: force render immediately
                 needs_render = true;
             } else if (!menu_is_watch_mode()) {
@@ -463,8 +483,16 @@ static void main_task(void *arg) {
 void app_main(void) {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
+        esp_err_t erase_err = nvs_flash_erase();
+        if (erase_err != ESP_OK) {
+            ESP_LOGE(TAG, "NVS erase failed: %s", esp_err_to_name(erase_err));
+            return;
+        }
+        ret = nvs_flash_init();
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "NVS init failed: %s - aborting", esp_err_to_name(ret));
+        return;
     }
 
     // Set timezone to UTC+3 (Istanbul)
@@ -484,7 +512,10 @@ void app_main(void) {
         .min_freq_mhz = 40,
         .light_sleep_enable = true
     };
-    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+    ret = esp_pm_configure(&pm_config);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_pm_configure failed: %s - continuing without PM", esp_err_to_name(ret));
+    }
 
     ESP_LOGI(TAG, "Init I2C");
     if (i2c_master_init() != ESP_OK) {

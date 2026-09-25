@@ -12,6 +12,9 @@ extern "C" {
 typedef void (*ble_notification_callback_t)(const char *title, const char *body);
 typedef void (*ble_control_callback_t)(const char *command);
 
+/* Max BLE control command length. Must fit OTA URLs (https://... up to 255 chars). */
+#define BLE_CMD_MAX_LEN 256
+
 typedef struct {
     char title[32];
     char body[128];
@@ -26,6 +29,9 @@ bool ble_manager_get_last_notification(ble_notification_t *out, bool clear_unrea
 bool ble_manager_is_connected(void);
 bool ble_manager_is_active(void);
 esp_err_t ble_manager_send_command(const char *command);
+
+/* Stop advertising (e.g. before deep sleep). Safe to call when not advertising. */
+void ble_manager_stop_adv(void);
 
 /* Periodic housekeeping: stop advertising after idle timeout; restart on user activity.
  * Call from main_task. user_active = screen on, recent button/gesture, etc. */

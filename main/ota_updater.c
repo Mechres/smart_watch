@@ -14,12 +14,16 @@
 
 #include "ble_manager.h"
 #include "wifi_manager.h"
+#include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "OTA";
 
 #define OTA_TASK_STACK   8192
 #define OTA_TASK_PRIO    5
 #define OTA_URL_MAX      256
+/* HTTPS OTA + TLS cert bundle needs significant heap on C3. Abort early if low. */
+#define OTA_MIN_FREE_HEAP 60000
 
 static volatile bool s_ota_in_progress = false;
 static char s_ota_url[OTA_URL_MAX];
@@ -28,11 +32,26 @@ static void ota_task(void *arg) {
     (void)arg;
     esp_err_t err;
 
-    ESP_LOGI(TAG, "Starting OTA from %s", s_ota_url);
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+    if (free_heap < OTA_MIN_FREE_HEAP) {
+        ESP_LOGE(TAG, "OTA aborted: low heap (%u < %u)", (unsigned)free_heap, (unsigned)OTA_MIN_FREE_HEAP);
+        ble_manager_send_command("ota_status=fail");
+        s_ota_in_progress = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Starting OTA from %s (free heap %u)", s_ota_url, (unsigned)free_heap);
     ble_manager_send_command("ota_status=start");
 
     /* Ensure WiFi is up for the download */
-    wifi_start();
+    if (wifi_start() != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi start failed - aborting OTA");
+        ble_manager_send_command("ota_status=wifi_fail");
+        s_ota_in_progress = false;
+        vTaskDelete(NULL);
+        return;
+    }
     if (!wifi_ensure_connection(15000)) {
         ESP_LOGE(TAG, "WiFi connect failed - aborting OTA");
         ble_manager_send_command("ota_status=wifi_fail");
@@ -63,10 +82,21 @@ static void ota_task(void *arg) {
         return;
     }
 
-    /* Optional: log new image descriptor */
+    /* Optional: log new image descriptor + skip if same version */
     esp_app_desc_t new_app_info;
     if (esp_https_ota_get_img_desc(https_ota_handle, &new_app_info) == ESP_OK) {
         ESP_LOGI(TAG, "New app: %s %s", new_app_info.project_name, new_app_info.version);
+        const esp_app_desc_t *current = esp_app_get_description();
+        if (current && strncmp(current->version, new_app_info.version,
+                               sizeof(current->version)) == 0) {
+            ESP_LOGW(TAG, "OTA image version matches current (%s) - aborting", current->version);
+            esp_https_ota_abort(https_ota_handle);
+            ble_manager_send_command("ota_status=fail");
+            wifi_stop();
+            s_ota_in_progress = false;
+            vTaskDelete(NULL);
+            return;
+        }
     }
 
     int image_size = esp_https_ota_get_image_size(https_ota_handle);

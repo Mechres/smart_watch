@@ -2,6 +2,7 @@
 #include "esp_sleep.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
+#include "ble_manager.h"
 #include "display.h"
 #include "sensors.h"
 #include "pedometer.h"
@@ -23,14 +24,19 @@ void power_enter_deep_sleep(void) {
     
     // 1. Turn off OLED display to prevent battery drain and burn-in
     sh1106_display_off();
+
+    // 2. Stop radios so they don't stay on across sleep
+    wifi_stop();
+    ble_manager_stop_adv();
     
-    // 2. Flush pending step count to NVS (steps since last periodic save)
+    // 3. Flush pending step count to NVS (steps since last periodic save)
     pedometer_save();
 
     // 3. Clear any lingering tap interrupt on ADXL345
     sensors_clear_tap_interrupt();
     
     // 4. Enable wakeup on GPIO 1 (ADXL345 tap, active LOW) and GPIO 5 (OK Button, active LOW)
+    // Note: timer wakeup intentionally not enabled; wake sources are tap + OK button.
     uint64_t wake_mask = (1ULL << 1) | (1ULL << 5);
     esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW);
     if (err != ESP_OK) {
@@ -70,7 +76,7 @@ uint32_t power_get_poll_interval_ms(void) {
         case POWER_LIGHT_SLEEP:
             return 500;   /* Light sleep: 500ms (I2C stays on for motion detection) */
         case POWER_DEEP_SLEEP:
-            return 5000;  /* Deep sleep: minimal polling before actual deep sleep triggered */
+            return 100;   /* Unreachable: power_update_mode() enters deep sleep immediately */
         default:
             return 100;
     }

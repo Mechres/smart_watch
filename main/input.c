@@ -22,6 +22,7 @@
 static const char *TAG = "input";
 static QueueHandle_t button_queue = NULL;
 static TaskHandle_t s_notify_task_handle = NULL;
+static uint32_t s_input_dropped = 0;
 
 void input_register_notify_task(TaskHandle_t task_handle) {
     s_notify_task_handle = task_handle;
@@ -51,6 +52,9 @@ static void debounce_task(void *arg) {
             if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
                 ESP_LOGD(TAG, "UP button pressed");
                 event_generated = true;
+            } else {
+                s_input_dropped++;
+                ESP_LOGW(TAG, "UP press dropped (queue full, total=%u)", s_input_dropped);
             }
         }
         if (down_now && !last_down) {
@@ -58,6 +62,9 @@ static void debounce_task(void *arg) {
             if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
                 ESP_LOGD(TAG, "DOWN button pressed");
                 event_generated = true;
+            } else {
+                s_input_dropped++;
+                ESP_LOGW(TAG, "DOWN press dropped (queue full, total=%u)", s_input_dropped);
             }
         }
         if (ok_now && !last_ok) {
@@ -65,6 +72,9 @@ static void debounce_task(void *arg) {
             if (xQueueSend(button_queue, &event, 0) == pdTRUE) {
                 ESP_LOGD(TAG, "OK button pressed");
                 event_generated = true;
+            } else {
+                s_input_dropped++;
+                ESP_LOGW(TAG, "OK press dropped (queue full, total=%u)", s_input_dropped);
             }
         }
 

@@ -10,7 +10,7 @@
 typedef enum {
     POWER_ACTIVE = 0,       /* Full polling (100ms), responsive */
     POWER_LIGHT_SLEEP,      /* Reduced polling (500ms), I2C on, detect motion */
-    POWER_DEEP_SLEEP        /* Minimal polling (5s), timer wakeup */
+    POWER_DEEP_SLEEP        /* Enter deep sleep immediately (no return); wake via tap/OK button */
 } power_mode_t;
 
 /* Get current power mode */

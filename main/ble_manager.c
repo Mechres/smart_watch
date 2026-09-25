@@ -29,7 +29,7 @@ static ble_control_callback_t s_control_cb = NULL;
 
 static SemaphoreHandle_t s_notif_mutex;
 static ble_notification_t s_last_notification = {0};
-static char s_last_command[48] = {0};
+static char s_last_command[BLE_CMD_MAX_LEN] = {0};
 
 static uint16_t s_notification_handle;
 static uint16_t s_control_handle;
@@ -138,6 +138,8 @@ static void handle_notification_write(const uint8_t *data, uint16_t len) {
 static void handle_control_write(const uint8_t *data, uint16_t len) {
     memset(s_last_command, 0, sizeof(s_last_command));
     if (len >= sizeof(s_last_command)) {
+        ESP_LOGW(TAG, "Control command truncated: %u bytes to %u", len,
+                 (unsigned)(sizeof(s_last_command) - 1));
         len = sizeof(s_last_command) - 1;
     }
     memcpy(s_last_command, data, len);
@@ -316,17 +318,17 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
             if (event->connect.status == 0) {
-                ESP_LOGW(TAG, "BLE connected");
+                ESP_LOGI(TAG, "BLE connected");
                 s_ble_connected = true;
                 s_conn_handle = event->connect.conn_handle;
                 s_ble_advertising = false;
             } else {
-                ESP_LOGW(TAG, "BLE connect failed; status=%d", event->connect.status);
+                ESP_LOGI(TAG, "BLE connect failed; status=%d", event->connect.status);
                 ble_app_advertise();
             }
             break;
         case BLE_GAP_EVENT_DISCONNECT:
-            ESP_LOGW(TAG, "BLE disconnected; reason=%d", event->disconnect.reason);
+            ESP_LOGI(TAG, "BLE disconnected; reason=%d", event->disconnect.reason);
             s_ble_connected = false;
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             s_adv_intentionally_stopped = false;
@@ -377,6 +379,18 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
 static void send_write_ack(uint16_t conn_handle, uint16_t attr_handle, const uint8_t *data,
                            uint16_t len) {
     if (conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+    /* Don't send unsolicited ATT notify before the client subscribes (CCCD).
+     * This can corrupt service discovery on some Android stacks. */
+    bool subscribed = false;
+    if (attr_handle == s_notification_handle) {
+        subscribed = s_notif_subscribed;
+    } else if (attr_handle == s_control_handle) {
+        subscribed = s_control_subscribed;
+    }
+    if (!subscribed) {
+        ESP_LOGD(TAG, "Skip write ack: client not subscribed (attr=%u)", attr_handle);
         return;
     }
 
@@ -437,8 +451,20 @@ static void ble_app_advertise(void) {
     }
 }
 
-void ble_manager_housekeeping(bool user_active) {
-    if (s_ble_connected) {
+void ble_manager_stop_adv(void) {
+    if (!s_ble_advertising) {
+        return;
+    }
+    s_adv_intentionally_stopped = true;
+    int rc = ble_gap_adv_stop();
+    if (rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_adv_stop failed; rc=%d", rc);
+    }
+    s_ble_advertising = false;
+    s_adv_started_us = 0;
+}
+
+void ble_manager_housekeeping(bool user_active) {    if (s_ble_connected) {
         return;
     }
 

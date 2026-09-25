@@ -13,10 +13,17 @@ esp_err_t settings_init(void) {
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS partition was truncated, erasing and reinitializing");
-        ESP_ERROR_CHECK(nvs_flash_erase());
+        esp_err_t erase_err = nvs_flash_erase();
+        if (erase_err != ESP_OK) {
+            ESP_LOGE(TAG, "NVS erase failed: %s", esp_err_to_name(erase_err));
+            return erase_err;
+        }
         err = nvs_flash_init();
     }
-    ESP_ERROR_CHECK(err);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS init failed: %s - settings unavailable", esp_err_to_name(err));
+        return err;
+    }
     ESP_LOGI(TAG, "NVS initialized");
     return ESP_OK;
 }

@@ -1,5 +1,6 @@
 package com.hikaboshi.companion.ble
 
+import java.text.Normalizer
 import java.util.UUID
 
 object Protocol {
@@ -40,6 +41,23 @@ object Protocol {
         )
     }
 
+    /** Turkish letters with no NFKD decomposition to plain ASCII (dotless/dotted I). */
+    private val NON_DECOMPOSING_MAP = mapOf(
+        'ı' to 'i', 'İ' to 'I',
+    )
+
+    /**
+     * Watch font is ASCII-only and renders anything else as "?". Map Turkish
+     * (and other accented Latin) letters to their closest ASCII form instead;
+     * anything that still isn't ASCII afterwards (emoji, CJK, ...) is left as
+     * "?" on the watch, same as before.
+     */
+    private fun toAsciiFriendly(s: String): String {
+        val premapped = s.map { NON_DECOMPOSING_MAP[it] ?: it }.joinToString("")
+        val decomposed = Normalizer.normalize(premapped, Normalizer.Form.NFKD)
+        return decomposed.replace(Regex("\\p{Mn}+"), "")
+    }
+
     /** Title|Body payload, truncated to the firmware's field limits (UTF-8 safe). */
     fun notificationPayload(title: String, body: String): ByteArray {
         // Firmware caps: title 31 B, body 127 B. Never split a code point.
@@ -50,7 +68,9 @@ object Protocol {
             while (end > 0 && b[end - 1].toInt() and 0xC0 == 0x80) end--
             return String(b, 0, end, Charsets.UTF_8)
         }
-        return "${trunc(title, 31)}|${trunc(body, 127)}".toByteArray(Charsets.UTF_8)
+        val asciiTitle = toAsciiFriendly(title)
+        val asciiBody = toAsciiFriendly(body)
+        return "${trunc(asciiTitle, 31)}|${trunc(asciiBody, 127)}".toByteArray(Charsets.UTF_8)
     }
 
     fun parseBattery(data: ByteArray): Int? =

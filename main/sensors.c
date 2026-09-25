@@ -19,6 +19,7 @@ static const char *TAG = "Sensors";
 #define ADXL345_REG_LATENT          0x22
 #define ADXL345_REG_WINDOW          0x23
 #define ADXL345_REG_TAP_AXES        0x2A
+#define ADXL345_REG_BW_RATE         0x2C
 #define ADXL345_REG_POWER_CTL       0x2D
 #define ADXL345_REG_INT_ENABLE      0x2E
 #define ADXL345_REG_INT_MAP         0x2F
@@ -229,4 +230,18 @@ esp_err_t sensors_clear_tap_interrupt(void) {
     uint8_t reg = ADXL345_REG_INT_SOURCE;
     uint8_t val = 0;
     return i2c_master_write_read_device(I2C_MASTER_NUM, ADXL345_ADDR, &reg, 1, &val, 1, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
+}
+
+esp_err_t sensors_set_low_power_mode(bool enable) {
+    /* BW_RATE: bit4=LOW_POWER, bits[3:0]=rate.
+     * Normal: 0x0A = 100 Hz normal. Low-power: 0x17 = LOW_POWER + 12.5 Hz.
+     * 12.5 Hz is plenty for tap/wrist-tilt while saving current. */
+    uint8_t rate = enable ? 0x17 : 0x0A;
+    esp_err_t err = adxl345_write_reg(ADXL345_REG_BW_RATE, rate);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BW_RATE config failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "ADXL345 %s-power mode (rate=0x%02X)", enable ? "low" : "normal", rate);
+    }
+    return err;
 }

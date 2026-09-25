@@ -241,6 +241,7 @@ static void main_task(void *arg) {
     menu_init();
 
     sensors_init();
+    weather_load();
     if (battery_init() != ESP_OK) {
         ESP_LOGW(TAG, "Battery monitor unavailable - using defaults");
     }
@@ -319,6 +320,18 @@ static void main_task(void *arg) {
 
         // Only read sensors in active/idle modes (skip in deep sleep to save power)
         power_mode_t mode = power_get_mode();
+        /* Switch ADXL345 sampling rate on power-mode transitions. */
+        static power_mode_t last_adxl_mode = POWER_ACTIVE;
+        static bool adxl_low_power = false;
+        if (mode != last_adxl_mode) {
+            bool want_low = (mode == POWER_LIGHT_SLEEP);
+            if (want_low != adxl_low_power) {
+                if (sensors_set_low_power_mode(want_low) == ESP_OK) {
+                    adxl_low_power = want_low;
+                }
+            }
+            last_adxl_mode = mode;
+        }
         // Static cached readings to prevent aggressive polling and I2C blocking
         static float cached_temp = 25.0f;
         static float cached_hum = 50.0f;
@@ -338,6 +351,22 @@ static void main_task(void *arg) {
         }
         int batt_mv = cached_batt_mv;
         int batt_pct = cached_batt_pct;
+
+        /* Low-battery warning (once until recharged above hysteresis). */
+        static bool low_batt_warned = false;
+        if (!low_batt_warned && battery_is_available() && batt_pct <= 15 && batt_mv > 0) {
+            low_batt_warned = true;
+            menu_show_notification("Low Battery", "Charge soon!");
+            if (!screen_on) {
+                sh1106_display_on();
+                screen_on = true;
+                gesture_notify_screen_state(true);
+            }
+            last_motion_time_s = current_mono_s;
+            ESP_LOGW(TAG, "Low battery warning: %d%% (%dmV)", batt_pct, batt_mv);
+        } else if (low_batt_warned && batt_pct >= 20) {
+            low_batt_warned = false;
+        }
 
         // Update BLE characteristics only while connected
         if (ble_manager_is_connected()) {

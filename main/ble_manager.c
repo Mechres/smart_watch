@@ -437,8 +437,10 @@ static void ble_app_advertise(void) {
 
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    adv_params.itvl_min = 800;  // 500ms (800 * 0.625ms)
-    adv_params.itvl_max = 1600; // 1000ms (1600 * 0.625ms)
+    /* Slow advertising (1000-1500 ms) to save power; still discoverable.
+     * Was 500-1000 ms (800/1600). */
+    adv_params.itvl_min = 1600; // 1000ms (1600 * 0.625ms)
+    adv_params.itvl_max = 2400; // 1500ms (2400 * 0.625ms)
 
     rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
     if (rc != 0) {

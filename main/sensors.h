@@ -30,6 +30,11 @@ esp_err_t sensors_config_tap_wakeup(void);
 /* Clear ADXL345 interrupt flag by reading INT_SOURCE */
 esp_err_t sensors_clear_tap_interrupt(void);
 
+/* Switch ADXL345 between normal (50 Hz) and low-power (12.5 Hz, LOW_POWER bit)
+ * sampling. Call when power mode changes to save ~30 uA in light sleep.
+ * Tap detection stays enabled in both modes. */
+esp_err_t sensors_set_low_power_mode(bool enable);
+
 /* I2C bus concurrency locks */
 bool sensors_i2c_take(uint32_t timeout_ms);
 void sensors_i2c_give(void);

@@ -14,6 +14,9 @@ typedef struct {
 /* Set weather data manually (e.g. from BLE) */
 void weather_set_data(float temp_c, int weather_code);
 
+/* Restore last persisted weather from NVS (call at boot). */
+void weather_load(void);
+
 /* Get current weather data */
 weather_data_t weather_get_current(void);
 

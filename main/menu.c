@@ -66,6 +66,8 @@ typedef enum {
     SENSOR_TEMP = 0,
     SENSOR_HUMIDITY,
     SENSOR_STEPS,
+    SENSOR_DISTANCE,
+    SENSOR_CALORIES,
     SENSOR_ACCEL_X,
     SENSOR_ACCEL_Y,
     SENSOR_ACCEL_Z,
@@ -130,12 +132,14 @@ int menu_get_min_refresh_ms(void) {
         return 100; /* 1/10 s display resolution */
     }
     if (current_menu == MENU_WATCH) {
+        /* Throttle animations in light sleep to save power + I2C contention. */
+        bool low_power = (power_get_mode() == POWER_LIGHT_SLEEP);
         switch (current_watchface) {
             case WATCHFACE_TERMINAL:
-                return 1000; /* seconds field + 1 Hz cursor blink */
+                return low_power ? 2000 : 1000; /* seconds field + cursor blink */
             case WATCHFACE_MATRIX:
             case WATCHFACE_CATS:
-                return 200;  /* animation tick */
+                return low_power ? 1000 : 200;  /* animation tick */
             default:
                 return 0;    /* static: render only on content change */
         }
@@ -212,6 +216,12 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
                 break;
             case SENSOR_STEPS:
                 snprintf(buf, sizeof(buf), "Steps: %d", pedometer_get_steps());
+                break;
+            case SENSOR_DISTANCE:
+                snprintf(buf, sizeof(buf), "Dist: %.2f km", pedometer_get_distance_m() / 1000.0f);
+                break;
+            case SENSOR_CALORIES:
+                snprintf(buf, sizeof(buf), "Kcal: %.1f", pedometer_get_calories_kcal());
                 break;
             case SENSOR_ACCEL_X:
                 snprintf(buf, sizeof(buf), "AccelX: %d", ax);

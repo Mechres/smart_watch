@@ -24,6 +24,16 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!-- Without this, package-visibility restrictions (Android 11+) hide most
+         user apps (WhatsApp, Instagram, ...) from the notification-forwarding
+         app picker; only apps with a launcher activity are needed there. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

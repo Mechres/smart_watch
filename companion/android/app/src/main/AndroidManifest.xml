@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <!-- Watch "Phone Silent" button toggles the phone's Do Not Disturb -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application

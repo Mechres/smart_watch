@@ -23,8 +23,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -78,8 +81,13 @@ class WatchBleManager(private val context: Context) {
     private val _state = MutableStateFlow(WatchState())
     val state: StateFlow<WatchState> = _state.asStateFlow()
 
-    /** External hooks (find-phone ring, music keys). */
-    var onControlEvent: ((String) -> Unit)? = null
+    /**
+     * Watch -> phone control events (find-phone, music keys, dismiss, DND toggle).
+     * A SharedFlow so the service, the ViewModel, and the notification listener
+     * can each collect independently without clobbering one another's handler.
+     */
+    private val _controlEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val controlEvents: SharedFlow<String> = _controlEvents.asSharedFlow()
 
     private val bluetoothManager =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -514,7 +522,7 @@ class WatchBleManager(private val context: Context) {
                                 lastOtaProgress = msg.removePrefix("ota_progress=").toIntOrNull()
                             )
                     }
-                    // Forward find-phone / music / alarm events (ignore pure write-echo ACKs of our own cmds)
+                    // Forward watch-initiated events (ignore pure write-echo ACKs of our own cmds)
                     if (msg in listOf(
                             Protocol.EVT_FIND_PHONE,
                             Protocol.EVT_FIND_PHONE_STOP,
@@ -522,9 +530,11 @@ class WatchBleManager(private val context: Context) {
                             Protocol.EVT_MUSIC_NEXT,
                             Protocol.EVT_MUSIC_PREV,
                             Protocol.EVT_ALARM,
+                            Protocol.EVT_DISMISS_NOTIF,
+                            Protocol.EVT_DND_TOGGLE,
                         )
                     ) {
-                        onControlEvent?.invoke(msg)
+                        _controlEvents.tryEmit(msg)
                     }
                     appendLog("← $msg")
                 }

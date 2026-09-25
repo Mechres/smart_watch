@@ -642,7 +642,7 @@ static void render_root_menu(void) {
     fb_draw_header("MENU");
 
     /* 8x8 MSB-first glyphs, one per root item. */
-    static const uint8_t ICONS[10][8] = {
+    static const uint8_t ICONS[11][8] = {
         {0x10,0x10,0x10,0x10,0x38,0x38,0x7C,0x38}, /* Sensors: thermometer */
         {0x00,0x18,0x3C,0x42,0x42,0x3E,0x00,0x00}, /* Weather: cloud */
         {0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0x00}, /* Settings: sliders */
@@ -652,6 +652,7 @@ static void render_root_menu(void) {
         {0x38,0x28,0x20,0x20,0x20,0x60,0x70,0x00}, /* Music: note */
         {0x10,0x00,0x38,0x10,0x10,0x10,0x38,0x00}, /* System Info: i */
         {0x3C,0x42,0x42,0x42,0x24,0x18,0x18,0x00}, /* Flashlight: bulb */
+        {0x18,0x3C,0x7C,0x7C,0x7C,0x7C,0x3C,0x18}, /* Phone Silent: moon */
         {0x10,0x30,0x7E,0x30,0x10,0x00,0x00,0x00}, /* Back: arrow */
     };
     const char *items[] = {
@@ -664,9 +665,10 @@ static void render_root_menu(void) {
         "Music Control",
         "System Info",
         "Flashlight",
+        "Phone Silent",
         "[Back]"
     };
-    int item_count = 10;
+    int item_count = 11;
 
     int start_idx = root_selection - 2;
     if (start_idx < 0) start_idx = 0;
@@ -849,7 +851,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
 
     if (event == BTN_UP_PRESS) {
         if (current_menu == MENU_ROOT) {
-            root_selection = (root_selection > 0) ? root_selection - 1 : 9;
+            root_selection = (root_selection > 0) ? root_selection - 1 : 10;
         } else if (current_menu == MENU_WATCHFACE) {
             watchface_selection = (watchface_selection > 0) ? watchface_selection - 1 : WATCHFACE_COUNT;
         } else if (current_menu == MENU_FIND_PHONE) {
@@ -886,7 +888,7 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            root_selection = (root_selection < 9) ? root_selection + 1 : 0;
+            root_selection = (root_selection < 10) ? root_selection + 1 : 0;
         } else if (current_menu == MENU_WATCHFACE) {
             watchface_selection = (watchface_selection < WATCHFACE_COUNT) ? watchface_selection + 1 : 0;
         } else if (current_menu == MENU_FIND_PHONE) {
@@ -956,6 +958,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                     ESP_LOGW(TAG, "flashlight contrast failed");
                 }
             } else if (root_selection == 9) {
+                ble_manager_send_command("dnd_toggle");
+            } else if (root_selection == 10) {
                 current_menu = MENU_WATCH; // Back to watch
             }
         } else if (current_menu == MENU_FIND_PHONE) {
@@ -1057,7 +1061,8 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 current_menu = MENU_ROOT;
             }
         } else if (current_menu == MENU_NOTIFICATION) {
-             // OK dismisses (UP/DN scroll)
+             // OK dismisses (UP/DN scroll); tell the phone so it clears too.
+             ble_manager_send_command("dismiss_notif");
              current_menu = MENU_WATCH;
         } else if (current_menu == MENU_SYNC_WAIT) {
              // Allow exit from sync wait

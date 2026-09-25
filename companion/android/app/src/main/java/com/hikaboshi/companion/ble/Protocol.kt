@@ -99,4 +99,6 @@ object Protocol {
     const val EVT_MUSIC_NEXT = "music_next"
     const val EVT_MUSIC_PREV = "music_prev"
     const val EVT_ALARM = "alarm"
+    const val EVT_DISMISS_NOTIF = "dismiss_notif"
+    const val EVT_DND_TOGGLE = "dnd_toggle"
 }

@@ -54,6 +54,7 @@ class WatchLinkService : LifecycleService() {
     private var ble: WatchBleManager? = null
     private var ringing = false
     private var stateJob: Job? = null
+    private var controlJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -100,7 +101,10 @@ class WatchLinkService : LifecycleService() {
     fun attachManager(manager: WatchBleManager) {
         ble = manager
         sharedManager = manager
-        manager.onControlEvent = { cmd -> handleControl(cmd) }
+        controlJob?.cancel()
+        controlJob = lifecycleScope.launch {
+            manager.controlEvents.collect { cmd -> handleControl(cmd) }
+        }
     }
 
     private fun handleControl(cmd: String) {
@@ -186,6 +190,8 @@ class WatchLinkService : LifecycleService() {
     override fun onDestroy() {
         stateJob?.cancel()
         stateJob = null
+        controlJob?.cancel()
+        controlJob = null
         instance = null
         if (ble === sharedManager) {
             // UI owns the shared manager — don't tear it down here.

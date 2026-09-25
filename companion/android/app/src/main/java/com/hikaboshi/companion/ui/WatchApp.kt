@@ -201,6 +201,26 @@ private fun NotificationSettingsCard(state: UiState, vm: WatchViewModel) {
             }
         }
     }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Phone Silent (from watch)", style = MaterialTheme.typography.titleMedium)
+            if (!state.dndAccessGranted) {
+                Text(
+                    "Grant Do Not Disturb access so the watch's Phone Silent button can mute this phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedButton(onClick = { vm.openDndSettings() }) {
+                    Icon(Icons.Default.NotificationsActive, null)
+                    Text("  Grant access")
+                }
+            } else {
+                Text(
+                    "Enabled — the watch's Phone Silent button toggles this phone's Do Not Disturb.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -510,7 +530,9 @@ private fun DashboardSection(
                     "Find Phone → rings this phone.\n" +
                         "Music Control → play/next/prev media keys.\n" +
                         "Alarm → shows a toast + event log entry.\n" +
-                    "Keep this app open (or the link notification) for events.",
+                        "Notification screen, OK → dismisses it on the phone too.\n" +
+                        "Phone Silent (root menu) → toggles this phone's DND.\n" +
+                        "Keep this app open (or the link notification) for events.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }

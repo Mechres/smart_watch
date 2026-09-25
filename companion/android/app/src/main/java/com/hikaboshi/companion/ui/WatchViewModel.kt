@@ -1,5 +1,6 @@
 package com.hikaboshi.companion.ui
 
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -42,6 +43,7 @@ data class UiState(
     val toast: String? = null,
     val forwardEnabled: Boolean = false,
     val listenerGranted: Boolean = false,
+    val dndAccessGranted: Boolean = false,
     val notifApps: List<NotifAppRow> = emptyList(),
     val showAppPicker: Boolean = false,
 )
@@ -68,6 +70,7 @@ class WatchViewModel(
         _ui.value = _ui.value.copy(
             forwardEnabled = ble.forwardingEnabled(),
             listenerGranted = isListenerGranted(),
+            dndAccessGranted = isDndAccessGranted(),
         )
         viewModelScope.launch {
             ble.state.collect { s ->
@@ -82,7 +85,9 @@ class WatchViewModel(
                 }
             }
         }
-        ble.onControlEvent = { cmd -> handleWatchEvent(cmd) }
+        viewModelScope.launch {
+            ble.controlEvents.collect { cmd -> handleWatchEvent(cmd) }
+        }
     }
 
     private fun handleWatchEvent(cmd: String) {
@@ -92,12 +97,12 @@ class WatchViewModel(
             Protocol.EVT_MUSIC_TOGGLE,
             Protocol.EVT_MUSIC_NEXT,
             Protocol.EVT_MUSIC_PREV,
+            Protocol.EVT_DISMISS_NOTIF,
+            Protocol.EVT_DND_TOGGLE,
             -> {
                 _ui.value = _ui.value.copy(
                     history = (_ui.value.history + "watch: $cmd").takeLast(100),
                 )
-                // Service may also be listening; dual-dispatch is fine.
-                WatchLinkService.instance?.let { /* already hooked via attach */ }
             }
             Protocol.EVT_ALARM -> {
                 _ui.value = _ui.value.copy(
@@ -167,17 +172,33 @@ class WatchViewModel(
         }
     }
 
-    /** Re-check system listener access (call from onResume). */
+    /** Re-check system listener/DND access (call from onResume). */
     fun refreshListenerState() {
         _ui.value = _ui.value.copy(
             listenerGranted = isListenerGranted(),
             forwardEnabled = ble.forwardingEnabled(),
+            dndAccessGranted = isDndAccessGranted(),
         )
     }
 
     private fun isListenerGranted(): Boolean {
         val pkgs = NotificationManagerCompat.getEnabledListenerPackages(appContext)
         return pkgs.contains(appContext.packageName)
+    }
+
+    fun openDndSettings() {
+        val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            appContext.startActivity(intent)
+        } catch (e: Exception) {
+            _ui.value = _ui.value.copy(toast = "Cannot open settings: ${e.message}")
+        }
+    }
+
+    private fun isDndAccessGranted(): Boolean {
+        val nm = appContext.getSystemService(NotificationManager::class.java) ?: return false
+        return nm.isNotificationPolicyAccessGranted
     }
 
     fun hasLocationPermission(): Boolean =

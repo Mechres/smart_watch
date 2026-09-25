@@ -201,8 +201,7 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
     fb_clear();
     char buf[64];
     
-    fb_draw_text(0, 0, "===SENSORS===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("SENSORS");
     
     int start_idx = current_sensor - 2;
     if (start_idx < 0) start_idx = 0;
@@ -259,8 +258,7 @@ static void render_settings_menu(void) {
     fb_clear();
     char buf[64];
     
-    fb_draw_text(0, 0, "===SETTINGS===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("SETTINGS");
     
     int start_idx = current_setting - 2;
     if (start_idx < 0) start_idx = 0;
@@ -327,6 +325,20 @@ static void render_settings_menu(void) {
                 draw_menu_item(y_pos, "[Back]", is_selected);
                 break;
         }
+        /* Mini value bar for ranged settings (2px, row bottom; inverted with selection). */
+        if (i == SETTINGS_MOTION_THRESHOLD || i == SETTINGS_SCREEN_TIMEOUT || i == SETTINGS_BRIGHTNESS) {
+            int pct = 0;
+            if (i == SETTINGS_MOTION_THRESHOLD)
+                pct = (motion_threshold_editable - 10) * 100 / 490;
+            else if (i == SETTINGS_SCREEN_TIMEOUT)
+                pct = (screen_timeout_editable - 1) * 100 / 59;
+            else
+                pct = brightness_editable * 100 / 255;
+            if (pct < 0) pct = 0;
+            if (pct > 100) pct = 100;
+            int bar_w = (124 * pct) / 100;
+            if (bar_w > 0) fb_fill_rect(2, y_pos + 8, bar_w, 2, is_selected ? 0 : 1);
+        }
         y_pos += 10;
     }
 
@@ -339,8 +351,7 @@ static void render_weather_menu(void) {
     fb_clear();
     char buf[64];
     
-    fb_draw_text(0, 0, "===WEATHER===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("WEATHER");
     
     weather_data_t w = weather_get_current();
     if (w.valid) {
@@ -363,8 +374,7 @@ static void render_stopwatch_menu(void) {
     fb_clear();
     char buf[64];
 
-    fb_draw_text(0, 0, "===STOPWATCH===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("STOPWATCH");
 
     // Calculate current elapsed time
     int64_t current_elapsed = stopwatch_elapsed_time;
@@ -401,8 +411,7 @@ static void render_system_info_menu(void) {
     fb_clear();
     char buf[64];
 
-    fb_draw_text(0, 0, "===SYS INFO===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("SYS INFO");
 
     // Uptime
     int64_t uptime_us = esp_timer_get_time();
@@ -450,8 +459,7 @@ static void render_flashlight_menu(void) {
 
 static void render_notification_menu(void) {
     fb_clear();
-    fb_draw_text(0, 0, "===NOTIFY===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("NOTIFY");
     
     // Title
     fb_draw_text(0, 12, notif_title);
@@ -490,8 +498,7 @@ static void render_notification_menu(void) {
 
 static void render_sync_wait(void) {
     fb_clear();
-    fb_draw_text(0, 0, "=== SYNC ===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("SYNC");
     
     int status = wifi_get_sync_status();
     if (status == 1) {
@@ -507,8 +514,7 @@ static void render_sync_wait(void) {
 
 static void render_find_phone_menu(void) {
     fb_clear();
-    fb_draw_text(0, 0, "===FIND PHONE===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("FIND PHONE");
     
     draw_menu_item(30, "Ring Phone", find_phone_selection == 0);
     draw_menu_item(42, "Stop ring", find_phone_selection == 1);
@@ -517,8 +523,7 @@ static void render_find_phone_menu(void) {
 
 static void render_music_control_menu(void) {
     fb_clear();
-    fb_draw_text(0, 0, "===MUSIC===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("MUSIC");
     
     const char *items[] = {
         "Play/Pause",
@@ -536,8 +541,7 @@ static void render_music_control_menu(void) {
 
 static void render_root_menu(void) {
     fb_clear();
-    fb_draw_text(0, 0, "===MENU===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("MENU");
 
     const char *items[] = {
         "Sensors",
@@ -573,8 +577,7 @@ static void render_root_menu(void) {
 static void render_watchface_menu(void) {
     fb_clear();
     
-    fb_draw_text(0, 0, "===WATCHFACE===");
-    fb_draw_line(0, 9, DISP_WIDTH, 9, 1);
+    fb_draw_header("WATCHFACE");
     
     const char *names[WATCHFACE_COUNT] = {
         "Digital",
@@ -698,13 +701,13 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
 
     if (event == BTN_UP_PRESS) {
         if (current_menu == MENU_ROOT) {
-            if (root_selection > 0) root_selection--;
+            root_selection = (root_selection > 0) ? root_selection - 1 : 9;
         } else if (current_menu == MENU_WATCHFACE) {
-            if (watchface_selection > 0) watchface_selection--;
+            watchface_selection = (watchface_selection > 0) ? watchface_selection - 1 : WATCHFACE_COUNT;
         } else if (current_menu == MENU_FIND_PHONE) {
-            if (find_phone_selection > 0) find_phone_selection--;
+            find_phone_selection = (find_phone_selection > 0) ? find_phone_selection - 1 : 2;
         } else if (current_menu == MENU_MUSIC_CONTROL) {
-            if (music_selection > 0) music_selection--;
+            music_selection = (music_selection > 0) ? music_selection - 1 : 3;
         } else if (current_menu == MENU_SETTINGS && editing_mode) {
             if (current_setting == SETTINGS_MOTION_THRESHOLD) {
                 motion_threshold_editable += 10;
@@ -723,19 +726,19 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
                 editing_mode = false; // cancel confirm
             }
         } else if (current_menu == MENU_SETTINGS) {
-            if (current_setting > 0) current_setting--;
+            current_setting = (current_setting > 0) ? current_setting - 1 : SETTINGS_COUNT - 1;
         } else if (current_menu == MENU_SENSOR_DATA) {
-            if (current_sensor > 0) current_sensor--;
+            current_sensor = (current_sensor > 0) ? current_sensor - 1 : SENSOR_COUNT - 1;
         }
     } else if (event == BTN_DOWN_PRESS) {
         if (current_menu == MENU_ROOT) {
-            if (root_selection < 9) root_selection++;
+            root_selection = (root_selection < 9) ? root_selection + 1 : 0;
         } else if (current_menu == MENU_WATCHFACE) {
-            if (watchface_selection < WATCHFACE_COUNT) watchface_selection++;
+            watchface_selection = (watchface_selection < WATCHFACE_COUNT) ? watchface_selection + 1 : 0;
         } else if (current_menu == MENU_FIND_PHONE) {
-            if (find_phone_selection < 2) find_phone_selection++;
+            find_phone_selection = (find_phone_selection < 2) ? find_phone_selection + 1 : 0;
         } else if (current_menu == MENU_MUSIC_CONTROL) {
-            if (music_selection < 3) music_selection++;
+            music_selection = (music_selection < 3) ? music_selection + 1 : 0;
         } else if (current_menu == MENU_STOPWATCH) {
             if (!stopwatch_running) {
                 stopwatch_elapsed_time = 0; // Reset
@@ -759,8 +762,9 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             }
         } else if (current_menu == MENU_SETTINGS) {
             if (current_setting < SETTINGS_COUNT - 1) current_setting++;
+            else if (!editing_mode) current_setting = 0;
         } else if (current_menu == MENU_SENSOR_DATA) {
-            if (current_sensor < SENSOR_COUNT - 1) current_sensor++;
+            current_sensor = (current_sensor < SENSOR_COUNT - 1) ? current_sensor + 1 : 0;
         }
     } else if (event == BTN_OK_PRESS) {
         if (current_menu == MENU_WATCH) {

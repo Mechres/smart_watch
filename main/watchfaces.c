@@ -78,11 +78,17 @@ static void draw_wx_icon(int x, int y, int code) {
  * All faces call this first, then lay out content below y=10. */
 static void draw_status_bar(struct tm *timeinfo, int batt_pct) {
     fb_fill_rect(0, 0, DISP_WIDTH, 9, 1);
+    /* HH:MM plus AM/PM letter in 12h mode (24h has no suffix). */
+    bool h12 = (menu_get_time_format() == 1);
     char tbuf[8];
-    snprintf(tbuf, sizeof(tbuf), "%02d:%02d", disp_hour(timeinfo->tm_hour), timeinfo->tm_min);
+    if (h12)
+        snprintf(tbuf, sizeof(tbuf), "%02d:%02d%c", disp_hour(timeinfo->tm_hour), timeinfo->tm_min,
+                 timeinfo->tm_hour < 12 ? 'A' : 'P');
+    else
+        snprintf(tbuf, sizeof(tbuf), "%02d:%02d", disp_hour(timeinfo->tm_hour), timeinfo->tm_min);
     fb_draw_text_ex(2, 1, tbuf, 0, -1);
 
-    int ix = 34;
+    int ix = h12 ? 40 : 34;
     if (ble_manager_is_connected()) {
         fb_draw_bitmap(ix, 0, 8, 8, ICON_BT, 0);
         ix += 10;

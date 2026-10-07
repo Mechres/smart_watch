@@ -26,7 +26,7 @@ static esp_err_t sh1106_write_page(uint8_t page, const uint8_t *data128);
 #define ACK_CHECK_EN                0x1
 #define SH1106_ADDR                 0x3C
 
-static uint8_t fb[DISP_WIDTH * PAGE_COUNT];
+uint8_t fb[DISP_WIDTH * PAGE_COUNT];
 static uint8_t last_fb[DISP_WIDTH * PAGE_COUNT]; // For dirty check
 
 void fb_clear(void) { memset(fb, 0x00, sizeof(fb)); }

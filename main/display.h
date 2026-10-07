@@ -9,6 +9,8 @@
 #define DISP_HEIGHT 64
 #define PAGE_COUNT (DISP_HEIGHT / 8)
 
+extern uint8_t fb[DISP_WIDTH * PAGE_COUNT];
+
 void fb_clear(void);
 void fb_set_pixel(int x, int y, int color);
 void fb_draw_char(int x, int y, char c);

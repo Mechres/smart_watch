@@ -349,10 +349,21 @@ static const uint8_t cat_f2[] = {
 
 static void draw_bitmap_16x16(int x, int y, const uint8_t *bitmap) {
     for (int r = 0; r < 16; r++) {
+        int py = y + r;
+        if (py < 0 || py >= DISP_HEIGHT) continue;
+        int page = py >> 3;
+        uint8_t bit = 1 << (py & 7);
+        int idx_base = page * DISP_WIDTH;
+
         uint16_t row_data = (bitmap[r*2] << 8) | bitmap[r*2+1];
+        if (!row_data) continue;
+
         for (int c = 0; c < 16; c++) {
+            int px = x + c;
+            if (px < 0 || px >= DISP_WIDTH) continue;
+
             if (row_data & (1 << (15-c))) {
-                fb_set_pixel(x + c, y + r, 1);
+                fb[idx_base + px] |= bit;
             }
         }
     }

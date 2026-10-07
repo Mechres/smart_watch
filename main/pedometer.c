@@ -29,6 +29,11 @@ static int last_day_saved = -1;
 static int32_t hist_steps[PEDO_HIST_DAYS] = {0};
 static int32_t hist_day[PEDO_HIST_DAYS] = {-1, -1, -1, -1, -1, -1, -1};
 
+typedef struct {
+    int32_t steps[PEDO_HIST_DAYS];
+    int32_t day[PEDO_HIST_DAYS];
+} pedo_history_t;
+
 /* Stride / calorie model (documented estimates, 70 kg adult walking). */
 #define PEDO_STRIDE_M 0.75f
 #define PEDO_KCAL_PER_STEP 0.04f
@@ -137,19 +142,31 @@ void pedometer_load(void) {
         last_day_saved = saved_day;
     }
 
-    // Load 7-day history (best-effort; missing keys = unknown)
-    for (int i = 0; i < PEDO_HIST_DAYS; i++) {
-        char key[10];
-        snprintf(key, sizeof(key), "hist%d", i);
-        int32_t v = 0;
-        if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
-            hist_steps[i] = v;
+    // Load 7-day history
+    pedo_history_t history;
+    size_t length = sizeof(history);
+    err = nvs_get_blob(my_handle, "history", &history, &length);
+    if (err == ESP_OK && length == sizeof(history)) {
+        for (int i = 0; i < PEDO_HIST_DAYS; i++) {
+            hist_steps[i] = history.steps[i];
+            hist_day[i] = history.day[i];
         }
-        snprintf(key, sizeof(key), "hday%d", i);
-        if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
-            hist_day[i] = v;
+    } else {
+        // Fallback: Load 7-day history from old individual keys (best-effort)
+        for (int i = 0; i < PEDO_HIST_DAYS; i++) {
+            char key[10];
+            snprintf(key, sizeof(key), "hist%d", i);
+            int32_t v = 0;
+            if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
+                hist_steps[i] = v;
+            }
+            snprintf(key, sizeof(key), "hday%d", i);
+            if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
+                hist_day[i] = v;
+            }
         }
     }
+
     hist_steps[0] = step_count;
     hist_day[0] = last_day_saved;
 
@@ -173,13 +190,14 @@ void pedometer_save(void) {
 
     hist_steps[0] = step_count;
     hist_day[0] = last_day_saved;
+
+    pedo_history_t history;
     for (int i = 0; i < PEDO_HIST_DAYS; i++) {
-        char key[10];
-        snprintf(key, sizeof(key), "hist%d", i);
-        nvs_set_i32(my_handle, key, hist_steps[i]);
-        snprintf(key, sizeof(key), "hday%d", i);
-        nvs_set_i32(my_handle, key, hist_day[i]);
+        history.steps[i] = hist_steps[i];
+        history.day[i] = hist_day[i];
     }
+    err = nvs_set_blob(my_handle, "history", &history, sizeof(history));
+    if (err != ESP_OK) ESP_LOGE(TAG, "Failed to save history blob");
 
     err = nvs_commit(my_handle);
     if (err != ESP_OK) ESP_LOGE(TAG, "Failed to commit NVS");

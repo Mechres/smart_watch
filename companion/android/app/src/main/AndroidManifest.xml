@@ -11,6 +11,10 @@
     <!-- Find phone ring + media control -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required by MediaSessionManager.getActiveSessions(); without it the call
+         throws SecurityException ("Missing permission to control media") and the
+         music watchface never receives track info. Runtime-granted. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

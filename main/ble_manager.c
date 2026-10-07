@@ -29,6 +29,7 @@ static ble_control_callback_t s_control_cb = NULL;
 
 static SemaphoreHandle_t s_notif_mutex;
 static ble_notification_t s_last_notification = {0};
+static ble_media_t s_media = {0};
 static char s_last_command[BLE_CMD_MAX_LEN] = {0};
 
 static uint16_t s_notification_handle;
@@ -37,6 +38,7 @@ static uint16_t s_battery_handle;
 static uint16_t s_steps_handle;
 static uint16_t s_distance_handle;
 static uint16_t s_calories_handle;
+static uint16_t s_media_handle;
 
 static uint8_t s_battery_val = 0;
 static uint32_t s_steps_val = 0;
@@ -94,6 +96,14 @@ static const ble_uuid128_t CALORIES_CHAR_UUID =
     BLE_UUID128_INIT(0x26, 0x25, 0x24, 0x23, 0x22, 0x21, 0x5b, 0xc3,
                      0x5e, 0x4d, 0x06, 0x05, 0xda, 0x5c, 0x71, 0xb2);
 
+/* Media (now-playing metadata): d7e8f9a0-1b2c-4d5e-8f90-a1b2c3d4e5f6
+ * Phone writes the current track so the watch can render a music watchface
+ * without asking the phone back. Read-back uses the same wire format so the
+ * phone can resync after a reconnect. */
+static const ble_uuid128_t MEDIA_CHAR_UUID =
+    BLE_UUID128_INIT(0xf6, 0xe5, 0xd4, 0xc3, 0xb2, 0xa1, 0x90, 0x8f,
+                     0x5e, 0x4d, 0x2c, 0x1b, 0xa0, 0xf9, 0xe8, 0xd7);
+
 static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg);
 static void ble_app_advertise(void);
@@ -149,6 +159,49 @@ static void handle_notification_write(const uint8_t *data, uint16_t len) {
 
     store_notification(title, body);
     ESP_LOGD(TAG, "Notification received: title='%s' body='%s'", title, body);
+}
+
+/* Media wire format (explicit, not a raw struct — mirrors Notification):
+ *   byte 0: flags (bit0=playing, bit1=has_data)
+ *   byte 1: title_len  (0..BLE_MEDIA_TITLE_MAX-1)
+ *   byte 2: artist_len (0..BLE_MEDIA_ARTIST_MAX-1)
+ *   bytes 3..: title bytes, then artist bytes
+ * Written by the phone; the same layout is used for a read-back so the phone
+ * can resync its state after a reconnect.
+ */
+#define MEDIA_WIRE_HDR 3
+#define MEDIA_WIRE_MAX (MEDIA_WIRE_HDR + BLE_MEDIA_TITLE_MAX + BLE_MEDIA_ARTIST_MAX)
+
+static void handle_media_write(const uint8_t *data, uint16_t len) {
+    if (len < MEDIA_WIRE_HDR) {
+        ESP_LOGW(TAG, "Media write too short: %u bytes", len);
+        return;
+    }
+    uint8_t flags = data[0];
+    uint8_t title_len = data[1];
+    uint8_t artist_len = data[2];
+
+    /* Reject lengths that overrun the payload or the destination buffers
+     * rather than trusting the phone's arithmetic. */
+    if (title_len >= BLE_MEDIA_TITLE_MAX || artist_len >= BLE_MEDIA_ARTIST_MAX ||
+        (uint16_t)MEDIA_WIRE_HDR + title_len + artist_len > len) {
+        ESP_LOGW(TAG, "Media write bad lengths (flags=%u t=%u a=%u len=%u)", flags, title_len, artist_len, len);
+        return;
+    }
+
+    ble_media_t m = {0};
+    m.playing = (flags & 0x01) != 0;
+    m.has_data = (flags & 0x02) != 0;
+    memcpy(m.title, data + MEDIA_WIRE_HDR, title_len);
+    m.title[title_len] = '\0';
+    memcpy(m.artist, data + MEDIA_WIRE_HDR + title_len, artist_len);
+    m.artist[artist_len] = '\0';
+
+    if (s_notif_mutex) xSemaphoreTake(s_notif_mutex, portMAX_DELAY);
+    s_media = m;
+    if (s_notif_mutex) xSemaphoreGive(s_notif_mutex);
+
+    ESP_LOGD(TAG, "Media received: '%s' - '%s' playing=%d", m.title, m.artist, m.playing);
 }
 
 static void handle_control_write(const uint8_t *data, uint16_t len) {
@@ -214,6 +267,12 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             return 0;
         }
 
+        if (attr_handle == s_media_handle) {
+            handle_media_write(buffer, data_len);
+            send_write_ack(conn_handle, s_media_handle, buffer, data_len);
+            return 0;
+        }
+
         ESP_LOGW(TAG, "Write to unknown handle %u", attr_handle);
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -266,6 +325,24 @@ static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
 
         if (attr_handle == s_calories_handle) {
             int rc = os_mbuf_append(ctxt->om, &s_calories_val, sizeof(s_calories_val));
+            return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
+        if (attr_handle == s_media_handle) {
+            ble_media_t m;
+            if (s_notif_mutex) xSemaphoreTake(s_notif_mutex, portMAX_DELAY);
+            m = s_media;
+            if (s_notif_mutex) xSemaphoreGive(s_notif_mutex);
+
+            uint8_t buf[MEDIA_WIRE_MAX];
+            size_t tl = strnlen(m.title, BLE_MEDIA_TITLE_MAX - 1);
+            size_t al = strnlen(m.artist, BLE_MEDIA_ARTIST_MAX - 1);
+            buf[0] = (m.playing ? 0x01 : 0x00) | (m.has_data ? 0x02 : 0x00);
+            buf[1] = (uint8_t)tl;
+            buf[2] = (uint8_t)al;
+            memcpy(buf + MEDIA_WIRE_HDR, m.title, tl);
+            memcpy(buf + MEDIA_WIRE_HDR + tl, m.artist, al);
+            int rc = os_mbuf_append(ctxt->om, buf, MEDIA_WIRE_HDR + tl + al);
             return (rc == 0) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
@@ -337,6 +414,12 @@ static const struct ble_gatt_chr_def gatt_svr_chrs[] = {
         .access_cb = gatt_svr_chr_access,
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
         .val_handle = &s_calories_handle,
+    },
+    {
+        .uuid = &MEDIA_CHAR_UUID.u,
+        .access_cb = gatt_svr_chr_access,
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ,
+        .val_handle = &s_media_handle,
     },
     {0},
 };
@@ -633,6 +716,16 @@ bool ble_manager_get_last_notification(ble_notification_t *out, bool clear_unrea
     if (s_notif_mutex) {
         xSemaphoreGive(s_notif_mutex);
     }
+
+    return out->has_data;
+}
+
+bool ble_manager_get_media(ble_media_t *out) {
+    if (!out) return false;
+
+    if (s_notif_mutex) xSemaphoreTake(s_notif_mutex, portMAX_DELAY);
+    *out = s_media;
+    if (s_notif_mutex) xSemaphoreGive(s_notif_mutex);
 
     return out->has_data;
 }

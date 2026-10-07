@@ -68,6 +68,14 @@ esp_err_t settings_load(int16_t *motion_threshold, int16_t *screen_timeout, int 
     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
         *watchface = 0;
     }
+    /* Clamp to a valid face. A stored value can outlive the enum it came from
+     * (a face is removed or reordered between firmware versions), and the
+     * render switch would otherwise fall through to the default face while the
+     * selection menu still highlighted a nonexistent entry. */
+    if (*watchface < 0 || *watchface >= SETTINGS_WATCHFACE_COUNT) {
+        ESP_LOGW(TAG, "Stored watchface %d out of range, using default", *watchface);
+        *watchface = 0;
+    }
 
     err = nvs_get_i16(handle, "brightness", brightness);
     if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {

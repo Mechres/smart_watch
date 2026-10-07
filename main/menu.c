@@ -15,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_wifi.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "wifi_manager.h"
 #include "ble_manager.h"
@@ -41,6 +42,7 @@ typedef enum {
     MENU_COUNT
 } menu_mode_t;
 
+/* Must stay in sync with SETTINGS_WATCHFACE_COUNT in settings.h. */
 typedef enum {
     WATCHFACE_DIGITAL = 0,
     WATCHFACE_ANALOG_STYLE,
@@ -49,8 +51,35 @@ typedef enum {
     WATCHFACE_TERMINAL,
     WATCHFACE_MATRIX,
     WATCHFACE_CATS,
+    WATCHFACE_MUSIC,
     WATCHFACE_COUNT
 } watchface_t;
+
+/* The persisted watchface index is validated against this count on load, so a
+ * mismatch here would silently reject the last face in the menu. */
+_Static_assert((int)WATCHFACE_COUNT == SETTINGS_WATCHFACE_COUNT,
+               "WATCHFACE_COUNT must match SETTINGS_WATCHFACE_COUNT");
+
+/* Transport button highlighted on the music watchface
+ * (0=prev, 1=play/pause, 2=next, -1=none). Defined here because menu.c owns
+ * the button handling that sets it; watchfaces.c only reads it. */
+int music_face_highlight = -1;
+
+/* Playback state the user just asked for but the phone has not confirmed yet.
+ * The watch optimistically shows the flipped state so the button feels instant
+ * instead of waiting on a BLE round-trip, and drops it once real metadata
+ * arrives or the confirmation deadline passes. */
+static bool s_music_optimistic = false;
+static bool s_music_optimistic_playing = false;
+static int64_t s_music_optimistic_at_us = 0;
+
+/* Optimistic state expires quickly: if the phone has not confirmed by then the
+ * user is better off seeing the real state than a guess. */
+#define MUSIC_OPTIMISTIC_TTL_MS 2500
+
+/* Set when a long OK press was consumed on the music watchface, so the
+ * release that follows does not also fire a play/pause toggle. */
+static bool s_music_ok_long = false;
 
 typedef enum {
     SETTINGS_MOTION_THRESHOLD = 0,
@@ -75,6 +104,7 @@ typedef enum {
     SENSOR_STEPS,
     SENSOR_DISTANCE,
     SENSOR_CALORIES,
+    SENSOR_STEP_HISTORY,
     SENSOR_ACCEL_X,
     SENSOR_ACCEL_Y,
     SENSOR_ACCEL_Z,
@@ -178,6 +208,30 @@ int16_t menu_get_screen_timeout(void) {
     return screen_timeout_editable;
 }
 
+/* Resolve which playback state the music watchface should draw.
+ *
+ * The watch cannot wait on a BLE round-trip for the UI to acknowledge a press,
+ * so an unconfirmed flip is drawn immediately. It is dropped as soon as the
+ * phone pushes metadata (last_reported changes to what we predicted) or the
+ * TTL expires, so the display can never sit on a stale guess. */
+bool music_take_optimistic_playing(bool last_reported, bool *pending) {
+    *pending = false;
+    if (!s_music_optimistic) return last_reported;
+
+    int64_t elapsed_ms = (esp_timer_get_time() - s_music_optimistic_at_us) / 1000;
+    if (last_reported == s_music_optimistic_playing) {
+        /* The phone pushed exactly what we predicted: confirmed, drop the guess. */
+        s_music_optimistic = false;
+        return last_reported;
+    }
+    if (elapsed_ms > MUSIC_OPTIMISTIC_TTL_MS) {
+        s_music_optimistic = false;
+        return last_reported;
+    }
+    *pending = true;
+    return s_music_optimistic_playing;
+}
+
 bool menu_is_watch_mode(void) {
     return (current_menu == MENU_WATCH);
 }
@@ -208,6 +262,10 @@ int menu_get_min_refresh_ms(void) {
             case WATCHFACE_MATRIX:
             case WATCHFACE_CATS:
                 return low_power ? 1000 : 200;  /* animation tick */
+            case WATCHFACE_MUSIC:
+                /* Redraw periodically so the elapsed/playing state stays in
+                 * sync with the phone without waiting for a metadata push. */
+                return low_power ? 2000 : 1000;
             default:
                 return 0;    /* static: render only on content change */
         }
@@ -263,6 +321,46 @@ static void draw_menu_item(int y, const char *text, bool selected) {
     }
 }
 
+/* Compact 7-day step sparkline for the Sensors list.
+ * Layout: "7D" label then 7 bars, oldest on the left, today on the right.
+ * Bars are scaled against the busiest day so the shape is always readable.
+ * Days with no recorded data are drawn as a faint baseline stub so a gap is
+ * visibly "unknown" rather than reading as a zero-step day. */
+#define HISTORY_BARS 7
+#define HIST_BAR_W  14
+#define HIST_BAR_GAP 2
+
+static void draw_step_history_row(int y, bool selected) {
+    int vals[HISTORY_BARS];
+    int maxv = 0;
+    for (int i = 0; i < HISTORY_BARS; i++) {
+        vals[i] = pedometer_get_history(i);
+        if (vals[i] > maxv) maxv = vals[i];
+    }
+    if (maxv < 1) maxv = 1; /* avoid divide-by-zero on an all-empty history */
+
+    if (selected) fb_fill_rect(0, y, DISP_WIDTH, 10, 1);
+    int fg = selected ? 0 : 1;
+
+    fb_draw_text_ex(2, y + 1, "7D", fg, -1);
+
+    const int x0 = 20;
+    const int bar_top = y + 1;
+    const int bar_max_h = 8;
+    for (int i = 0; i < HISTORY_BARS; i++) {
+        int bx = x0 + i * (HIST_BAR_W + HIST_BAR_GAP);
+        if (bx + HIST_BAR_W > DISP_WIDTH) break;
+        if (vals[i] < 0) {
+            /* unknown day: 2px stub at the baseline */
+            fb_fill_rect(bx, y + 8, HIST_BAR_W, 2, fg);
+            continue;
+        }
+        int h = (vals[i] * bar_max_h) / maxv;
+        if (h < 1) h = 1;
+        fb_fill_rect(bx, bar_top + (bar_max_h - h), HIST_BAR_W, h, fg);
+    }
+}
+
 static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct) {
     fb_clear();
     char buf[64];
@@ -296,6 +394,10 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
             case SENSOR_CALORIES:
                 snprintf(buf, sizeof(buf), "Kcal: %.1f", pedometer_get_calories_kcal());
                 break;
+            case SENSOR_STEP_HISTORY:
+                /* drawn by draw_step_history_row, not a text row */
+                buf[0] = '\0';
+                break;
             case SENSOR_ACCEL_X:
                 snprintf(buf, sizeof(buf), "AccelX: %d", ax);
                 break;
@@ -313,7 +415,11 @@ static void render_sensor_menu_list(float temp, float hum, int16_t ax, int16_t a
                 break;
         }
         
-        draw_menu_item(y_pos, buf, is_selected);
+        if (i == SENSOR_STEP_HISTORY) {
+            draw_step_history_row(y_pos, is_selected);
+        } else {
+            draw_menu_item(y_pos, buf, is_selected);
+        }
         y_pos += 10;
     }
     
@@ -544,9 +650,10 @@ static void render_system_info_menu(void) {
     }
     fb_draw_text(0, 32, buf);
 
-    // MAC (may fail if WiFi never initialized)
+    /* MAC from efuse: works even when the WiFi driver was never started
+     * (esp_wifi_get_mac needs an initialized driver, and WiFi is lazy). */
     uint8_t mac[6] = {0};
-    if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
         snprintf(buf, sizeof(buf), "MAC:%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     } else {
         snprintf(buf, sizeof(buf), "MAC: ------");
@@ -754,7 +861,8 @@ static void render_watchface_menu(void) {
         "Compact",
         "Terminal",
         "Matrix",
-        "Cats"
+        "Cats",
+        "Music"
     };
     
     // Total items = WATCHFACE_COUNT + 1 (for Back)
@@ -803,6 +911,9 @@ static void render_watch_display(float temp, float hum, int16_t ax, int16_t ay, 
             break;
         case WATCHFACE_CATS:
             render_watchface_cats(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
+            break;
+        case WATCHFACE_MUSIC:
+            render_watchface_music(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
             break;
         default:
             render_watchface_digital(temp, hum, ax, ay, az, batt_mv, batt_pct, timeinfo);
@@ -868,6 +979,14 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         /* Long-press OK: one level up (second press exits edit mode first). */
         switch (current_menu) {
             case MENU_WATCH:
+                /* On the music face a short OK is play/pause, so long-press
+                 * is the way into the menu. Remember it: BTN_OK_PRESS fires on
+                 * release and must not also toggle playback. */
+                if (current_watchface == WATCHFACE_MUSIC) {
+                    s_music_ok_long = true;
+                    current_menu = MENU_ROOT;
+                    root_selection = 0;
+                }
                 break;
             case MENU_ROOT:
             case MENU_NOTIFICATION:
@@ -906,7 +1025,11 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
     }
 
     if (event == BTN_UP_PRESS) {
-        if (current_menu == MENU_ROOT) {
+        if (current_menu == MENU_WATCH && current_watchface == WATCHFACE_MUSIC) {
+            /* Music face: UP = previous track */
+            music_face_highlight = 0;
+            ble_manager_send_command("music_prev");
+        } else if (current_menu == MENU_ROOT) {
             root_selection = (root_selection > 0) ? root_selection - 1 : 11;
         } else if (current_menu == MENU_WATCHFACE) {
             watchface_selection = (watchface_selection > 0) ? watchface_selection - 1 : WATCHFACE_COUNT;
@@ -945,7 +1068,11 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
             current_sensor = (current_sensor > 0) ? current_sensor - 1 : SENSOR_COUNT - 1;
         }
     } else if (event == BTN_DOWN_PRESS) {
-        if (current_menu == MENU_ROOT) {
+        if (current_menu == MENU_WATCH && current_watchface == WATCHFACE_MUSIC) {
+            /* Music face: DOWN = next track */
+            music_face_highlight = 2;
+            ble_manager_send_command("music_next");
+        } else if (current_menu == MENU_ROOT) {
             root_selection = (root_selection < 11) ? root_selection + 1 : 0;
         } else if (current_menu == MENU_WATCHFACE) {
             watchface_selection = (watchface_selection < WATCHFACE_COUNT) ? watchface_selection + 1 : 0;
@@ -993,8 +1120,24 @@ bool menu_handle_button(button_event_t event, int32_t current_time_s) {
         }
     } else if (event == BTN_OK_PRESS) {
         if (current_menu == MENU_WATCH) {
-            current_menu = MENU_ROOT;
-            root_selection = 0;
+            if (s_music_ok_long) {
+                /* Long OK already opened the menu on the music face. */
+                s_music_ok_long = false;
+            } else if (current_watchface == WATCHFACE_MUSIC) {
+                music_face_highlight = 1;
+                ble_media_t m;
+                if (ble_manager_get_media(&m)) {
+                    /* Show the requested state immediately; the real value
+                     * arrives with the next metadata push. */
+                    s_music_optimistic = true;
+                    s_music_optimistic_playing = !m.playing;
+                    s_music_optimistic_at_us = esp_timer_get_time();
+                }
+                ble_manager_send_command("music_toggle");
+            } else {
+                current_menu = MENU_ROOT;
+                root_selection = 0;
+            }
         } else if (current_menu == MENU_ROOT) {
             if (root_selection == 0) current_menu = MENU_SENSOR_DATA;
             else if (root_selection == 1) {

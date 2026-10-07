@@ -36,4 +36,15 @@ int menu_get_temp_unit(void);
 /* Show a notification on the screen */
 void menu_show_notification(const char *title, const char *body);
 
+/* Transport button currently highlighted on the music watchface
+ * (0=prev, 1=play/pause, 2=next, -1=none). Set by menu button handling and
+ * read by the watchface renderer. */
+extern int music_face_highlight;
+
+/* Playback state shown while waiting for the phone to confirm a press.
+ * music_take_optimistic_playing() reports true only while a pending flip is
+ * still valid, clearing it once metadata arrives or the TTL lapses, so the
+ * watchface falls back to the phone's real state. */
+bool music_take_optimistic_playing(bool last_reported, bool *pending);
+
 #endif // MENU_H

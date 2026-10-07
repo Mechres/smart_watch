@@ -13,9 +13,15 @@ object Protocol {
     val CHAR_STEPS: UUID = UUID.fromString("fedcba98-7654-3210-fedc-ba9876543210")
     val CHAR_DISTANCE: UUID = UUID.fromString("a1715cd1-0304-4b5c-b24a-111213141516")
     val CHAR_CALORIES: UUID = UUID.fromString("b2715cda-0506-4d5e-c35b-212223242526")
+    val CHAR_MEDIA: UUID = UUID.fromString("d7e8f9a0-1b2c-4d5e-8f90-a1b2c3d4e5f6")
 
     const val FLAG_HAS_DATA = 0x01
     const val FLAG_HAS_UNREAD = 0x02
+
+    const val MEDIA_FLAG_PLAYING = 0x01
+    const val MEDIA_FLAG_HAS_DATA = 0x02
+    const val MEDIA_TITLE_MAX = 48
+    const val MEDIA_ARTIST_MAX = 32
 
     data class WatchNotification(
         val hasData: Boolean,
@@ -58,19 +64,26 @@ object Protocol {
         return decomposed.replace(Regex("\\p{Mn}+"), "")
     }
 
+    /**
+     * Truncate to at most [maxBytes] UTF-8 bytes without splitting a code
+     * point. Rewinds over trailing continuation bytes (10xxxxxx) so we never
+     * cut a multi-byte character in half.
+     */
+    fun truncateUtf8(s: String, maxBytes: Int): String {
+        val b = s.toByteArray(Charsets.UTF_8)
+        if (b.size <= maxBytes) return s
+        var end = maxBytes
+        while (end > 0 && b[end - 1].toInt() and 0xC0 == 0x80) end--
+        return String(b, 0, end, Charsets.UTF_8)
+    }
+
     /** Title|Body payload, truncated to the firmware's field limits (UTF-8 safe). */
     fun notificationPayload(title: String, body: String): ByteArray {
-        // Firmware caps: title 31 B, body 127 B. Never split a code point.
-        fun trunc(s: String, maxBytes: Int): String {
-            val b = s.toByteArray(Charsets.UTF_8)
-            if (b.size <= maxBytes) return s
-            var end = maxBytes
-            while (end > 0 && b[end - 1].toInt() and 0xC0 == 0x80) end--
-            return String(b, 0, end, Charsets.UTF_8)
-        }
+        // Firmware caps: title 31 B, body 127 B.
         val asciiTitle = toAsciiFriendly(title)
         val asciiBody = toAsciiFriendly(body)
-        return "${trunc(asciiTitle, 31)}|${trunc(asciiBody, 127)}".toByteArray(Charsets.UTF_8)
+        return "${truncateUtf8(asciiTitle, 31)}|${truncateUtf8(asciiBody, 127)}"
+            .toByteArray(Charsets.UTF_8)
     }
 
     fun parseBattery(data: ByteArray): Int? =
@@ -103,6 +116,63 @@ object Protocol {
             v = v or ((data[i].toLong() and 0xFF) shl (8 * i))
         }
         return v / 10.0
+    }
+
+    /**
+     * Build a Media characteristic payload (phone → watch).
+     *
+     * Wire format mirrors the watch's own encoder:
+     *   byte 0: flags (bit0=playing, bit1=has_data)
+     *   byte 1: title_len
+     *   byte 2: artist_len
+     *   bytes 3..: title bytes, then artist bytes
+     *
+     * Title/artist are truncated to the watch's buffer sizes. Non-ASCII is
+     * kept (the watch renders UTF-8); lengths are counted in *bytes*, not
+     * characters, so multi-byte text cannot desync the parser.
+     */
+    fun mediaPayload(
+        title: String?,
+        artist: String?,
+        playing: Boolean,
+        hasData: Boolean,
+    ): ByteArray {
+        val t = truncateUtf8(title.orEmpty(), MEDIA_TITLE_MAX - 1)
+        val a = truncateUtf8(artist.orEmpty(), MEDIA_ARTIST_MAX - 1)
+        val tb = t.toByteArray(Charsets.UTF_8)
+        val ab = a.toByteArray(Charsets.UTF_8)
+        var flags = 0
+        if (playing) flags = flags or MEDIA_FLAG_PLAYING
+        if (hasData) flags = flags or MEDIA_FLAG_HAS_DATA
+        val out = ByteArray(3 + tb.size + ab.size)
+        out[0] = flags.toByte()
+        out[1] = tb.size.toByte()
+        out[2] = ab.size.toByte()
+        tb.copyInto(out, 3)
+        ab.copyInto(out, 3 + tb.size)
+        return out
+    }
+
+    data class WatchMedia(
+        val hasData: Boolean,
+        val playing: Boolean,
+        val title: String,
+        val artist: String,
+    )
+
+    /** Parse Media characteristic READ payload. */
+    fun parseMedia(data: ByteArray): WatchMedia? {
+        if (data.size < 3) return null
+        val flags = data[0].toInt() and 0xFF
+        val titleLen = data[1].toInt() and 0xFF
+        val artistLen = data[2].toInt() and 0xFF
+        if (data.size < 3 + titleLen + artistLen) return null
+        return WatchMedia(
+            hasData = flags and MEDIA_FLAG_HAS_DATA != 0,
+            playing = flags and MEDIA_FLAG_PLAYING != 0,
+            title = String(data, 3, titleLen, Charsets.UTF_8),
+            artist = String(data, 3 + titleLen, artistLen, Charsets.UTF_8),
+        )
     }
 
     // Phone → watch

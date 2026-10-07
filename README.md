@@ -13,9 +13,16 @@ Choose from a variety of stylish and functional watchfaces:
 - **Terminal**: Retro command-line interface style.
 - **Matrix**: "Digital rain" animation effect.
 - **Cats**: Animated cat pixel art.
+- **Music**: Now-playing view with track title, artist and transport controls
+  (UP = previous, OK = play/pause, DOWN = next, long-press OK for the menu).
+  Metadata is pushed from the phone; shows an idle prompt when nothing is playing.
+  Requires *Media* (a.k.a. "Read media audio") permission plus notification
+  listener access — without both, Android will not let the app read the active
+  media session and the face stays on "No media playing".
 
 ### 🏃 Fitness & Sensors
-- **Pedometer**: Accurate step counting using the ADXL345 accelerometer.
+- **Pedometer**: Accurate step counting using the ADXL345 accelerometer, with a
+  7-day history sparkline in the Sensors menu.
 - **Environment**: Real-time Temperature and Humidity readings (via SHT3x/AHT10).
 - **Motion Detection**: Wake-on-lift functionality to save battery.
 

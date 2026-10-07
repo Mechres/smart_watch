@@ -22,10 +22,26 @@ typedef struct {
     bool has_unread;
 } ble_notification_t;
 
+/* Now-playing metadata pushed from the phone (see Media characteristic).
+ * has_data=false means nothing is playing, so the watchface can show an
+ * idle state rather than stale track info. */
+#define BLE_MEDIA_TITLE_MAX  48
+#define BLE_MEDIA_ARTIST_MAX 32
+
+typedef struct {
+    char title[BLE_MEDIA_TITLE_MAX];
+    char artist[BLE_MEDIA_ARTIST_MAX];
+    bool playing;
+    bool has_data;
+} ble_media_t;
+
 esp_err_t ble_manager_init(ble_notification_callback_t notification_cb,
                            ble_control_callback_t control_cb);
 
 bool ble_manager_get_last_notification(ble_notification_t *out, bool clear_unread);
+/* Latest now-playing metadata pushed by the phone. Returns false if nothing
+ * has been received yet this boot. Thread-safe. */
+bool ble_manager_get_media(ble_media_t *out);
 bool ble_manager_is_connected(void);
 bool ble_manager_is_active(void);
 esp_err_t ble_manager_send_command(const char *command);

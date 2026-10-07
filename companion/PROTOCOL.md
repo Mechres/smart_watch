@@ -16,6 +16,7 @@ Device name: **Hikaboshi**
 | Steps | `fedcba98-7654-3210-fedc-ba9876543210` | Read, Notify |
 | Distance | `a1715cd1-0304-4b5c-b24a-111213141516` | Read, Notify |
 | Calories | `b2715cda-0506-4d5e-c35b-212223242526` | Read, Notify |
+| Media | `d7e8f9a0-1b2c-4d5e-8f90-a1b2c3d4e5f6` | Read, Write |
 
 ### Notification write (phone → watch)
 
@@ -49,6 +50,23 @@ bytes 3..: title bytes, then body bytes
 ### Calories
 
 `uint32` LE deci-kcal (kcal × 10, ~0.04 kcal/step estimate).
+
+### Media
+
+Now-playing metadata for the watch's Music watchface. Written by the phone whenever the
+active media session changes, and readable so the phone can resync after a reconnect.
+Explicit wire format (mirrors Notification, not a raw struct):
+
+```
+byte 0: flags (bit0=playing, bit1=has_data)
+byte 1: title_len  (0..47)
+byte 2: artist_len (0..31)
+bytes 3..: title bytes (UTF-8), then artist bytes (UTF-8)
+```
+
+Lengths are **byte** counts, not character counts, so multi-byte text stays in sync.
+The watch rejects a payload whose lengths overrun the buffer or the declared size.
+`has_data=0` means nothing is playing and the watchface shows an idle prompt.
 
 ## Control commands (phone → watch write)
 

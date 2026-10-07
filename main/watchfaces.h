@@ -13,5 +13,6 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
 void render_watchface_terminal(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
 void render_watchface_matrix(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
 void render_watchface_cats(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
+void render_watchface_music(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo);
 
 #endif // WATCHFACES_H

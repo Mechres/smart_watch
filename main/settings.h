@@ -5,6 +5,11 @@
 
 #include "esp_err.h"
 
+/* Number of selectable watchfaces. Mirrors the watchface_t enum in menu.c, which
+ * cannot be included here without a circular dependency. Keep the two in sync
+ * when adding or removing a face. */
+#define SETTINGS_WATCHFACE_COUNT 8
+
 /* Initialize NVS (call once at startup) */
 esp_err_t settings_init(void);
 

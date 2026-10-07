@@ -23,6 +23,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -31,7 +34,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -75,6 +77,11 @@ class WatchBleManager(private val context: Context) {
         private const val TAG = "WatchBle"
         private const val CCCD = "00002902-0000-1000-8000-00805f9b34fb"
         private const val MAX_LOG = 200
+
+        /* A rejected write means the GATT TX queue was momentarily busy. */
+        private const val WRITE_ATTEMPTS = 4
+        private const val WRITE_RETRY_MS = 60L
+        private const val WRITE_CALLBACK_TIMEOUT_MS = 3_000L
         private val RECONNECT_DELAYS = longArrayOf(5, 10, 20, 30, 60, 60, 60, 60)
     }
 
@@ -101,8 +108,17 @@ class WatchBleManager(private val context: Context) {
     private var stepsChar: BluetoothGattCharacteristic? = null
     private var distanceChar: BluetoothGattCharacteristic? = null
     private var caloriesChar: BluetoothGattCharacteristic? = null
+    private var mediaChar: BluetoothGattCharacteristic? = null
 
     private var pendingConnect: ((Result<BluetoothGatt>) -> Unit)? = null
+
+    /* Only one GATT write may be in flight at a time, and Android reports a
+     * second concurrent attempt as writeCharacteristic()==false ("rejected").
+     * Several coroutines write independently (media poll, time-sync,
+     * notifications, weather), so writes are serialised through this mutex
+     * rather than sharing a single pendingWrite slot - concurrent callers would
+     * otherwise clobber each other's callback and one would hang forever. */
+    private val writeMutex = Mutex()
     private var pendingWrite: ((Result<Unit>) -> Unit)? = null
 
     private val prefs = context.getSharedPreferences(BleHolder.PREFS, Context.MODE_PRIVATE)
@@ -279,11 +295,19 @@ class WatchBleManager(private val context: Context) {
             stepsChar = service.getCharacteristic(Protocol.CHAR_STEPS)
             distanceChar = service.getCharacteristic(Protocol.CHAR_DISTANCE)
             caloriesChar = service.getCharacteristic(Protocol.CHAR_CALORIES)
+            mediaChar = service.getCharacteristic(Protocol.CHAR_MEDIA)
 
             if (controlChar == null || notifyChar == null) {
                 if (retryDiscovery(gatt, "chars missing")) return
                 failDiscovery(gatt, "Required characteristics missing")
                 return
+            }
+
+            // Media is optional (older firmware won't have it), but its absence
+            // after a cache refresh usually means Android served a stale GATT
+            // table from before the characteristic was added.
+            if (mediaChar == null) {
+                appendLog("Media char absent (${service.characteristics.size} chars seen)")
             }
 
             // Enable notifications on all known chars, then resolve connect.
@@ -473,6 +497,7 @@ class WatchBleManager(private val context: Context) {
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
+                negotiatedMtu = mtu
                 appendLog("MTU negotiated: $mtu")
                 _state.value = _state.value.copy(mtu = mtu)
             } else {
@@ -814,34 +839,104 @@ class WatchBleManager(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
+    private var negotiatedMtu = 23
+
     private suspend fun write(uuid: UUID, payload: ByteArray) {
+        // Serialise: one write in flight at a time, retries on a busy stack.
+        writeMutex.withLock { writeLocked(uuid, payload) }
+    }
+
+    private suspend fun writeLocked(uuid: UUID, payload: ByteArray) {
         val g = gatt ?: throw IllegalStateException("Not connected")
+        // A write longer than MTU-3 is silently dropped by the stack, so catch
+        // it here rather than leaving the watch showing stale data.
+        if (payload.size > negotiatedMtu - 3) {
+            throw IllegalStateException(
+                "payload ${payload.size} B exceeds MTU $negotiatedMtu (max ${negotiatedMtu - 3}); " +
+                    "negotiation may not have completed"
+            )
+        }
         val c = when (uuid) {
             Protocol.CHAR_NOTIFICATION -> notifyChar
             Protocol.CHAR_CONTROL -> controlChar
+            Protocol.CHAR_MEDIA -> mediaChar
             else -> g.getService(Protocol.SERVICE)?.getCharacteristic(uuid)
-        } ?: throw IllegalStateException("Characteristic missing")
+        } ?: throw IllegalStateException("Characteristic missing: $uuid")
         c.value = payload
-        suspendCancellableCoroutine { cont ->
-            pendingWrite = { result ->
-                if (cont.isActive) {
-                    result.fold(
-                        onSuccess = { cont.resume(Unit) },
-                        onFailure = { cont.resumeWithException(it) },
-                    )
+
+        // Install the completion callback BEFORE asking the stack to send.
+        // Registering it afterwards races: the ATT response can come back fast
+        // enough that onCharacteristicWrite runs while pendingWrite is still
+        // empty, so the callback is dropped and this coroutine waits forever.
+        // That is what used to leave the watch stuck on a stale play/pause state.
+        var lastError: String? = null
+        for (attempt in 0 until WRITE_ATTEMPTS) {
+            val outcome = withTimeoutOrNull(WRITE_CALLBACK_TIMEOUT_MS) {
+                suspendCancellableCoroutine<Pair<Boolean, String?>> { cont ->
+                    pendingWrite = { result ->
+                        if (cont.isActive) {
+                            result.fold(
+                                onSuccess = { cont.resume(true to null) },
+                                onFailure = { cont.resume(false to (it.message ?: "write failed")) },
+                            )
+                        }
+                    }
+                    cont.invokeOnCancellation { pendingWrite = null }
+                    // Rejected means the TX queue is momentarily full; another
+                    // write is completing or notifications are in flight.
+                    val ok = try {
+                        g.writeCharacteristic(c)
+                    } catch (e: Exception) {
+                        pendingWrite = null
+                        false
+                    }
+                    if (!ok && cont.isActive) {
+                        pendingWrite = null
+                        cont.resume(false to "rejected")
+                    }
                 }
             }
-            cont.invokeOnCancellation { pendingWrite = null }
-            if (!g.writeCharacteristic(c)) {
-                pendingWrite = null
-                cont.resumeWithException(IllegalStateException("writeCharacteristic rejected"))
+            if (outcome != null) {
+                val (ok, err) = outcome
+                if (ok) {
+                    appendLog("→ ${payload.toString(Charsets.UTF_8).ifEmpty { payload.joinToString() }}")
+                    return
+                }
+                lastError = err
+            } else {
+                lastError = "callback timed out (link may have dropped)"
             }
+            if (attempt < WRITE_ATTEMPTS - 1) delay(WRITE_RETRY_MS)
         }
-        appendLog("→ ${payload.toString(Charsets.UTF_8).ifEmpty { payload.joinToString() }}")
+        throw IllegalStateException("media/write failed: $lastError")
     }
 
     suspend fun sendNotification(title: String, body: String) {
         write(Protocol.CHAR_NOTIFICATION, Protocol.notificationPayload(title, body))
+    }
+
+    /** Push now-playing metadata so the watch's music face has something to show. */
+    suspend fun sendMedia(title: String?, artist: String?, playing: Boolean, hasData: Boolean) {
+        // The full payload can be 81 B, needing an MTU of 84+. If negotiation has
+        // not completed yet the usable space is much smaller, so shrink the fields
+        // to fit the current MTU instead of letting the write be dropped. The
+        // header is 3 B plus 2 length bytes, leaving (mtu - 8) for text; the
+        // title gets the larger share since it's the more useful on a 128x64 face.
+        val usable = negotiatedMtu - 8
+        if (usable <= 0) {
+            throw IllegalStateException("MTU $negotiatedMtu too small for a media payload")
+        }
+        var t = title.orEmpty()
+        var a = artist.orEmpty()
+        if (t.toByteArray(Charsets.UTF_8).size + a.toByteArray(Charsets.UTF_8).size > usable) {
+            val tRoom = maxOf(1, usable * 2 / 3)
+            t = Protocol.truncateUtf8(t, tRoom)
+            a = Protocol.truncateUtf8(a, usable - tRoom)
+        }
+        write(
+            Protocol.CHAR_MEDIA,
+            Protocol.mediaPayload(t, a, playing, hasData),
+        )
     }
 
     suspend fun sendCommand(command: String) {

@@ -33,7 +33,11 @@ bool battery_is_available(void) {
     return s_battery_available;
 }
 
-// LiPo discharge curve lookup table (Voltage -> Percentage)
+/* LiPo discharge curve (Voltage -> Percentage), ordered high to low.
+ * A LiPo cell holds a fairly flat plateau around 3.7-3.9V and then falls
+ * away quickly near empty, so the table is deliberately dense at both ends
+ * and sparse through the middle. Interpolated linearly between points.
+ * Must be kept sorted descending by voltage. */
 typedef struct {
     int16_t voltage;
     uint8_t percentage;
@@ -41,16 +45,23 @@ typedef struct {
 
 static const battery_curve_t lipo_curve[] = {
     {4200, 100},
-    {4100, 90},
-    {4000, 80},
-    {3900, 70},
-    {3800, 60},
-    {3700, 50},
-    {3600, 30},
-    {3500, 15},
-    {3400, 5},
-    {3300, 0}
+    {4100,  92},
+    {4000,  84},
+    {3900,  72},
+    {3800,  60},
+    {3750,  54},
+    {3700,  47},
+    {3650,  39},
+    {3600,  31},
+    {3550,  22},
+    {3500,  15},
+    {3450,   9},
+    {3400,   5},
+    {3350,   2},
+    {3300,   0}
 };
+
+#define LIPO_CURVE_LEN ((int)(sizeof(lipo_curve) / sizeof(lipo_curve[0])))
 
 esp_err_t battery_init(void) {
     // Configure GPIO4 as input with no pull resistors BEFORE ADC init
@@ -143,21 +154,19 @@ int battery_get_voltage_mv(void) {
 }
 
 int battery_mv_to_percentage(int mv) {
-    if (mv >= lipo_curve[0].voltage) return 100;
-    if (mv <= lipo_curve[9].voltage) return 0;
+    if (mv >= lipo_curve[0].voltage) return lipo_curve[0].percentage;
+    if (mv <= lipo_curve[LIPO_CURVE_LEN - 1].voltage) return 0;
 
-    for (int i = 0; i < 9; i++) {
-        if (mv <= lipo_curve[i].voltage && mv > lipo_curve[i+1].voltage) {
-            // Linear interpolation between points
-            int v_high = lipo_curve[i].voltage;
-            int v_low = lipo_curve[i+1].voltage;
+    for (int i = 0; i < LIPO_CURVE_LEN - 1; i++) {
+        int v_high = lipo_curve[i].voltage;
+        int v_low = lipo_curve[i + 1].voltage;
+        if (mv <= v_high && mv > v_low) {
             int p_high = lipo_curve[i].percentage;
-            int p_low = lipo_curve[i+1].percentage;
-            
+            int p_low = lipo_curve[i + 1].percentage;
             return p_low + ((mv - v_low) * (p_high - p_low)) / (v_high - v_low);
         }
     }
-    
+
     return 0;
 }
 

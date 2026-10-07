@@ -85,6 +85,9 @@ static void draw_status_bar(struct tm *timeinfo, int batt_pct) {
 
 
 
+static const char *const MONTHS_TR[12] = {"Oca","Sub","Mar","Nis","May","Haz",
+                                          "Tem","Agu","Eyl","Eki","Kas","Ara"};
+
 /* Digital watchface - big time display (original) */
 void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
     (void)ax; (void)ay; (void)az; (void)batt_mv;
@@ -105,8 +108,7 @@ void render_watchface_digital(float temp, float hum, int16_t ax, int16_t ay, int
     fb_draw_text(105, 22, ssec);
 
     // Date: Day Mon Year in Turkish
-    const char *months_tr[12] = {"Oca","Sub","Mar","Nis","May","Haz","Tem","Agu","Eyl","Eki","Kas","Ara"};
-    snprintf(buf, sizeof(buf), "%02d %s %04d", timeinfo->tm_mday, months_tr[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
+    snprintf(buf, sizeof(buf), "%02d %s %04d", timeinfo->tm_mday, MONTHS_TR[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
     fb_draw_text_centered(36, buf);
 
     // Weather icon + temp/hum lower area
@@ -157,22 +159,29 @@ void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int1
                      cx + tick_pts[h][2], cy + tick_pts[h][3], 1);
     }
 
-    /* Hands */
+    /* Hands. Each hand's sin/cos pair is computed once and reused for both
+     * ends of the line (the second hand draws a tail), which halves the
+     * trig calls in a redraw that runs twice a second. */
     float h_angle = ((timeinfo->tm_hour % 12) + timeinfo->tm_min / 60.0f) * 30.0f;
     float rad = (h_angle - 90.0f) * 3.14159f / 180.0f;
-    fb_draw_line_thick(cx, cy, cx + (int)(12 * cosf(rad)), cy + (int)(12 * sinf(rad)), 3, 1);
+    float hx = cosf(rad), hy = sinf(rad);
+    fb_draw_line_thick(cx, cy, cx + (int)(12 * hx), cy + (int)(12 * hy), 3, 1);
 
     float m_angle = (timeinfo->tm_min + timeinfo->tm_sec / 60.0f) * 6.0f;
     rad = (m_angle - 90.0f) * 3.14159f / 180.0f;
-    fb_draw_line_thick(cx, cy, cx + (int)(19 * cosf(rad)), cy + (int)(19 * sinf(rad)), 2, 1);
+    float mx = cosf(rad), my = sinf(rad);
+    fb_draw_line_thick(cx, cy, cx + (int)(19 * mx), cy + (int)(19 * my), 2, 1);
 
     float s_angle = timeinfo->tm_sec * 6.0f;
     rad = (s_angle - 90.0f) * 3.14159f / 180.0f;
-    int sx = cx + (int)(20 * cosf(rad));
-    int sy = cy + (int)(20 * sinf(rad));
-    fb_draw_line(cx, cy, sx, sy, 1);
+    float sc = cosf(rad), ss = sinf(rad);
+    int sx = cx + (int)(20 * sc);
+    int sy = cy + (int)(20 * ss);
     /* tail for balance */
-    fb_draw_line(cx, cy, cx - (int)(5 * cosf(rad)), cy - (int)(5 * sinf(rad)), 1);
+    int tx = cx - (int)(5 * sc);
+    int ty = cy - (int)(5 * ss);
+    fb_draw_line(cx, cy, sx, sy, 1);
+    fb_draw_line(cx, cy, tx, ty, 1);
     fb_fill_circle(cx, cy, 2, 1);
 
     /* Right info panel */
@@ -205,7 +214,6 @@ void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int
     fb_clear();
     draw_status_bar(timeinfo, batt_pct);
     char buf[64];
-    const char *months_tr[12] = {"Oca","Sub","Mar","Nis","May","Haz","Tem","Agu","Eyl","Eki","Kas","Ara"};
 
     // Extra large 7-seg time (76px wide), colon blinks
     if (timeinfo->tm_sec % 2 == 0)
@@ -215,7 +223,7 @@ void render_watchface_minimal(float temp, float hum, int16_t ax, int16_t ay, int
     fb_draw_big_text(26, 12, buf, 1);
 
     // Date at bottom
-    snprintf(buf, sizeof(buf), "%02d %s %04d", timeinfo->tm_mday, months_tr[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
+    snprintf(buf, sizeof(buf), "%02d %s %04d", timeinfo->tm_mday, MONTHS_TR[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
     fb_draw_text_centered(50, buf);
 }
 
@@ -225,10 +233,9 @@ void render_watchface_compact(float temp, float hum, int16_t ax, int16_t ay, int
     fb_clear();
     draw_status_bar(timeinfo, batt_pct);
     char buf[64];
-    const char *months_tr[12] = {"Oca","Sub","Mar","Nis","May","Haz","Tem","Agu","Eyl","Eki","Kas","Ara"};
 
     // Date
-    snprintf(buf, sizeof(buf), "%02d-%s-%04d", timeinfo->tm_mday, months_tr[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
+    snprintf(buf, sizeof(buf), "%02d-%s-%04d", timeinfo->tm_mday, MONTHS_TR[timeinfo->tm_mon], 1900 + timeinfo->tm_year);
     fb_draw_text(0, 12, buf);
 
     // Temperature and humidity + weather icon right
@@ -402,4 +409,158 @@ void render_watchface_cats(float temp, float hum, int16_t ax, int16_t ay, int16_
     } else {
         draw_bitmap_16x16(cat_x, cat_y, cat_f2);
     }
+}
+
+/* 16x16 beamed eighth note, the hero glyph of the music face.
+ * fb_draw_bitmap is column-major packed: (w+7)/8 bytes per row, MSB first. */
+static const uint8_t ICON_NOTE16[32] = {
+    0x00,0x00, 0x00,0xF0, 0x01,0xF8, 0x01,0x98, 0x01,0x98, 0x01,0x98,
+    0x01,0x98, 0x01,0x98, 0x01,0x98, 0x01,0x98, 0x03,0x80, 0x07,0x80,
+    0x07,0xC0, 0x0F,0xC0, 0x0F,0x80
+};
+
+/* Music face layout. Bands are laid out so nothing can overlap:
+ *
+ *   0..8    status bar (shared with every other face)
+ *   11..24  hero note glyph, left; title / artist right of it
+ *   27      hairline divider
+ *   31..38  playback state, centred
+ *   45..58  transport row
+ */
+#define MUSIC_ROW_TITLE     11
+#define MUSIC_ROW_ARTIST    20
+#define MUSIC_DIVIDER_Y     28
+#define MUSIC_ROW_STATE     32
+#define MUSIC_TRANSPORT_Y   45
+#define MUSIC_TRANSPORT_H   14
+#define MUSIC_HERO_X        4
+#define MUSIC_HERO_Y        11
+#define MUSIC_TEXT_X        26
+
+/* Longest string that fits 128px at 6px/char, leaving room for an ellipsis. */
+#define MUSIC_MAX_CHARS 16
+
+/* Solid triangle, apex on the left (used by the prev button). */
+static void draw_tri_left_in(int x, int y, int w, int h, int color) {
+    for (int i = 0; i < w; i++) {
+        int hi = ((i + 1) * h) / w;
+        fb_fill_rect(x + i, y + (h - hi) / 2, 1, hi, color);
+    }
+}
+
+/* Solid triangle, apex on the right (used by the play/next buttons). */
+static void draw_tri_right_in(int x, int y, int w, int h, int color) {
+    for (int i = 0; i < w; i++) {
+        int hi = (((w - i) * h) + w - 1) / w;
+        fb_fill_rect(x + i, y + (h - hi) / 2, 1, hi, color);
+    }
+}
+
+/* Draw a clipped string left-aligned at x. Long values get a trailing ellipsis
+ * so the end of a title is lost rather than the beginning.
+ *
+ * Left alignment (rather than centring each row) is deliberate: title and artist
+ * share one left edge, so short and long tracks both read as a tidy block
+ * beside the hero glyph instead of drifting about. */
+static void draw_music_row_clipped(int x, int y, const char *s) {
+    char row[MUSIC_MAX_CHARS + 1];
+    strncpy(row, s, MUSIC_MAX_CHARS);
+    row[MUSIC_MAX_CHARS] = '\0';
+    if (strlen(s) > MUSIC_MAX_CHARS) {
+        row[MUSIC_MAX_CHARS - 3] = '.';
+        row[MUSIC_MAX_CHARS - 2] = '.';
+        row[MUSIC_MAX_CHARS - 1] = '.';
+        row[MUSIC_MAX_CHARS] = '\0';
+    }
+    fb_draw_text(x, y, row);
+}
+
+/* Transport row: prev / play-pause / next.
+ * The active button gets a filled pill so a press is visible, mirroring the
+ * inverted selection style used elsewhere in the menus. */
+static void draw_music_transport(bool playing, int highlight) {
+    const int btn_w = 24, btn_h = 14;
+    const int gap = 10;
+    const int total_w = btn_w * 3 + gap * 2;
+    const int x0 = (DISP_WIDTH - total_w) / 2;
+    const int y = MUSIC_TRANSPORT_Y;
+
+    for (int i = 0; i < 3; i++) {
+        int bx = x0 + i * (btn_w + gap);
+        int cx = bx + btn_w / 2;
+        int cy = y + btn_h / 2;
+
+        if (i == highlight) {
+            fb_fill_rect(bx, y, btn_w, btn_h, 1);
+            /* Punch the glyph out of the pill so it stays legible. */
+        }
+
+        int fg = (i == highlight) ? 0 : 1;
+        if (i == 0) {
+            /* prev: vertical bar + left-pointing triangle */
+            fb_fill_rect(cx - 8, cy - 5, 2, 11, fg);
+            draw_tri_left_in(cx - 4, cy - 5, 8, 11, fg);
+        } else if (i == 1) {
+            if (playing) {
+                fb_fill_rect(cx - 5, cy - 5, 3, 11, fg);
+                fb_fill_rect(cx + 2, cy - 5, 3, 11, fg);
+            } else {
+                draw_tri_right_in(cx - 5, cy - 5, 11, 11, fg);
+            }
+        } else {
+            /* next: right-pointing triangle + vertical bar */
+            draw_tri_right_in(cx - 3, cy - 5, 8, 11, fg);
+            fb_fill_rect(cx + 6, cy - 5, 2, 11, fg);
+        }
+    }
+}
+
+/* Music watchface - now-playing view.
+ *
+ * Layout is a hero note on the left with the track metadata set beside it, a
+ * hairline separator, a centred playback state and a transport row at the
+ * bottom. Metadata arrives from the phone over the Media characteristic; when
+ * nothing is playing the face shows a centred prompt instead of stale info.
+ */
+void render_watchface_music(float temp, float hum, int16_t ax, int16_t ay, int16_t az, int batt_mv, int batt_pct, struct tm *timeinfo) {
+    (void)ax; (void)ay; (void)az; (void)batt_mv; (void)temp; (void)hum;
+    fb_clear();
+    draw_status_bar(timeinfo, batt_pct);
+
+    ble_media_t m;
+    bool have = ble_manager_get_media(&m);
+
+    /* Hairline under the metadata block; dotted so it reads as a separator
+     * rather than a rule, and stays clear of the status bar above. */
+    for (int x = 4; x < DISP_WIDTH - 4; x += 4) fb_fill_rect(x, MUSIC_DIVIDER_Y, 2, 1, 1);
+
+    if (!have) {
+        /* Idle state: the transport keys still work, so the face stays usable
+         * before the phone has pushed anything. */
+        fb_draw_bitmap(56, 14, 16, 16, ICON_NOTE16, 1);
+        fb_draw_text_centered(MUSIC_ROW_STATE,
+                              ble_manager_is_connected() ? "No media playing"
+                                                        : "Phone not linked");
+        draw_music_transport(false, music_face_highlight);
+        return;
+    }
+
+    /* Hero glyph anchors the left column; title and artist sit to its right so
+     * the block reads as one unit rather than three loose lines. */
+    fb_draw_bitmap(MUSIC_HERO_X, MUSIC_HERO_Y, 16, 16, ICON_NOTE16, 1);
+    draw_music_row_clipped(MUSIC_TEXT_X, MUSIC_ROW_TITLE,
+                           m.title[0] ? m.title : "(unknown track)");
+    if (m.artist[0]) {
+        draw_music_row_clipped(MUSIC_TEXT_X, MUSIC_ROW_ARTIST, m.artist);
+    }
+
+    /* Playback state. A press flips this immediately rather than waiting on
+     * the phone's reply, so the button never looks unresponsive. */
+    bool pending = false;
+    bool shown_playing = music_take_optimistic_playing(m.playing, &pending);
+    const char *st = shown_playing ? "PLAYING" : "PAUSED";
+    int st_w = fb_text_width(st, 1);
+    fb_draw_text((DISP_WIDTH - st_w) / 2, MUSIC_ROW_STATE, st);
+
+    draw_music_transport(shown_playing, music_face_highlight);
 }

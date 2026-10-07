@@ -137,17 +137,30 @@ void pedometer_load(void) {
         last_day_saved = saved_day;
     }
 
-    // Load 7-day history (best-effort; missing keys = unknown)
-    for (int i = 0; i < PEDO_HIST_DAYS; i++) {
-        char key[10];
-        snprintf(key, sizeof(key), "hist%d", i);
-        int32_t v = 0;
-        if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
-            hist_steps[i] = v;
+    // Load 7-day history
+    struct {
+        int32_t steps[PEDO_HIST_DAYS];
+        int32_t day[PEDO_HIST_DAYS];
+    } blob;
+    size_t blob_size = sizeof(blob);
+    if (nvs_get_blob(my_handle, "hist_blob", &blob, &blob_size) == ESP_OK && blob_size == sizeof(blob)) {
+        for (int i = 0; i < PEDO_HIST_DAYS; i++) {
+            hist_steps[i] = blob.steps[i];
+            hist_day[i] = blob.day[i];
         }
-        snprintf(key, sizeof(key), "hday%d", i);
-        if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
-            hist_day[i] = v;
+    } else {
+        // Fallback: Load 7-day history using old individual keys (best-effort; missing keys = unknown)
+        for (int i = 0; i < PEDO_HIST_DAYS; i++) {
+            char key[10];
+            snprintf(key, sizeof(key), "hist%d", i);
+            int32_t v = 0;
+            if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
+                hist_steps[i] = v;
+            }
+            snprintf(key, sizeof(key), "hday%d", i);
+            if (nvs_get_i32(my_handle, key, &v) == ESP_OK) {
+                hist_day[i] = v;
+            }
         }
     }
     hist_steps[0] = step_count;
@@ -173,13 +186,16 @@ void pedometer_save(void) {
 
     hist_steps[0] = step_count;
     hist_day[0] = last_day_saved;
+
+    struct {
+        int32_t steps[PEDO_HIST_DAYS];
+        int32_t day[PEDO_HIST_DAYS];
+    } blob;
     for (int i = 0; i < PEDO_HIST_DAYS; i++) {
-        char key[10];
-        snprintf(key, sizeof(key), "hist%d", i);
-        nvs_set_i32(my_handle, key, hist_steps[i]);
-        snprintf(key, sizeof(key), "hday%d", i);
-        nvs_set_i32(my_handle, key, hist_day[i]);
+        blob.steps[i] = hist_steps[i];
+        blob.day[i] = hist_day[i];
     }
+    nvs_set_blob(my_handle, "hist_blob", &blob, sizeof(blob));
 
     err = nvs_commit(my_handle);
     if (err != ESP_OK) ESP_LOGE(TAG, "Failed to commit NVS");

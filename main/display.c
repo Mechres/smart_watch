@@ -126,9 +126,17 @@ void fb_draw_circle(int cx, int cy, int r, int color) {
 
 void fb_fill_circle(int cx, int cy, int r, int color) {
     if (r <= 0) return;
-    for (int dy = -r; dy <= r; dy++) {
-        int dx = (int)sqrtf((float)(r * r - dy * dy));
-        for (int x = -dx; x <= dx; x++) fb_set_pixel(cx + x, cy + dy, color);
+    int r2 = r * r;
+    int dx = r;
+    for (int dy = 0; dy <= r; dy++) {
+        int max_dx2 = r2 - dy * dy;
+        while (dx * dx > max_dx2) {
+            dx--;
+        }
+        for (int x = -dx; x <= dx; x++) {
+            fb_set_pixel(cx + x, cy + dy, color);
+            if (dy != 0) fb_set_pixel(cx + x, cy - dy, color);
+        }
     }
 }
 

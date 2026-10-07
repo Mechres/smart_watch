@@ -33,6 +33,12 @@ static int s_wake_cooldown = 0;   // Blocks arm right after screen-off (typing f
 
 static TaskHandle_t s_notify_task = NULL;
 
+static void notify_main_task(void) {
+    if (s_notify_task) {
+        xTaskNotifyGive(s_notify_task);
+    }
+}
+
 void gesture_register_notify_task(TaskHandle_t task_handle) {
     s_notify_task = task_handle;
 }
@@ -186,9 +192,7 @@ void gesture_process(int16_t ax, int16_t ay, int16_t az) {
                 s_lower_to_sleep_flag = true;
                 s_lowered_count = 0;
                 ESP_LOGI(TAG, "Lower-to-sleep triggered (arm lowered)");
-                if (s_notify_task) {
-                    xTaskNotifyGive(s_notify_task);
-                }
+                notify_main_task();
             }
         } else {
             if (s_lowered_count > 0) s_lowered_count--;
@@ -227,9 +231,7 @@ void gesture_process(int16_t ax, int16_t ay, int16_t az) {
                         s_state = GESTURE_STATE_VIEWING;
                         s_raise_to_wake_flag = true;
                         ESP_LOGI(TAG, "Raise-to-wake triggered (wrist tilted to face)");
-                        if (s_notify_task) {
-                            xTaskNotifyGive(s_notify_task);
-                        }
+                        notify_main_task();
                     }
                 } else {
                     s_stable_count = 0;

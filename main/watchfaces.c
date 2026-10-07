@@ -146,14 +146,15 @@ void render_watchface_analog(float temp, float hum, int16_t ax, int16_t ay, int1
     fb_draw_circle(cx, cy, R - 1, 1);
 
     /* 12 tick marks */
+    static const int8_t tick_pts[12][4] = {
+        {0, -18, 0, -22}, {10, -17, 11, -19}, {17, -9, 19, -10},
+        {18, 0, 22, 0}, {17, 9, 19, 10}, {10, 17, 11, 19},
+        {0, 18, 0, 22}, {-9, 17, -10, 19}, {-17, 10, -19, 11},
+        {-18, 0, -22, 0}, {-17, -9, -19, -10}, {-10, -17, -11, -19}
+    };
     for (int h = 0; h < 12; h++) {
-        float a = (h * 30.0f - 90.0f) * 3.14159f / 180.0f;
-        int inner = (h % 3 == 0) ? R - 6 : R - 4;
-        int x0 = cx + (int)(inner * cosf(a));
-        int y0 = cy + (int)(inner * sinf(a));
-        int x1 = cx + (int)((R - 2) * cosf(a));
-        int y1 = cy + (int)((R - 2) * sinf(a));
-        fb_draw_line(x0, y0, x1, y1, 1);
+        fb_draw_line(cx + tick_pts[h][0], cy + tick_pts[h][1],
+                     cx + tick_pts[h][2], cy + tick_pts[h][3], 1);
     }
 
     /* Hands */
